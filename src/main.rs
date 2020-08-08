@@ -2,7 +2,10 @@ use anyhow::{Error, Result};
 use clap::{App, Arg};
 use crossterm::{
     self, cursor, execute,
-    terminal::{size, EnterAlternateScreen, LeaveAlternateScreen, ScrollDown, ScrollUp, SetSize},
+    terminal::{
+        size, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, ScrollDown, ScrollUp,
+        SetSize,
+    },
     QueueableCommand,
 };
 use dirs;
@@ -153,7 +156,9 @@ impl Pane {
     fn display(&mut self) -> Result<(), Error> {
         let lines = &self.lines;
         let mut stdout = stdout();
-        stdout.queue(cursor::MoveTo(0, 0))?;
+        stdout
+            .queue(Clear(ClearType::All))?
+            .queue(cursor::MoveTo(0, 0))?;
         // Reuse for scroll to bottom?
         // let offset = if lines.len() >= self.size.1 as usize {
         //     lines.len() - self.size.1 as usize + 1
@@ -163,7 +168,6 @@ impl Pane {
         let mut count = 0;
         for line in lines.iter().skip(self.scroll_index) {
             self.display_line(&mut stdout, line)?;
-            self.scroll_index += 1;
             count += 1;
             if count >= self.size.1 {
                 break;
@@ -185,12 +189,15 @@ impl Pane {
     }
 
     fn scroll_down(&mut self) -> Result<(), Error> {
-        if self.scroll_index < self.lines.len() {
+        if self.scroll_index + self.size.1 < self.lines.len() {
             let mut stdout = stdout();
             stdout.queue(ScrollUp(1))?;
             stdout.queue(cursor::MoveTo(0, (self.size.1) as u16))?;
-            self.display_line(&mut stdout, &self.lines[self.scroll_index])?;
             self.scroll_index += 1;
+            self.display_line(
+                &mut stdout,
+                &self.lines[self.scroll_index + self.size.1 - 1],
+            )?;
             stdout.flush()?;
         }
         Ok(())
@@ -199,19 +206,22 @@ impl Pane {
     fn scroll_up(&mut self) -> Result<(), Error> {
         // scroll_index is on a line that has not been displayed
         // need to go one earlier than it in order to scroll back
-        if self.scroll_index as isize - self.size.1 as isize - 1 >= 0 {
+        if self.scroll_index > 0 {
             let mut stdout = stdout();
             stdout.queue(ScrollDown(1))?;
             stdout.queue(cursor::MoveTo(0, 0))?;
-            self.display_line(
-                &mut stdout,
-                &self.lines[self.scroll_index - self.size.1 - 1 as usize],
-            )?;
             self.scroll_index -= 1;
+            self.display_line(&mut stdout, &self.lines[self.scroll_index])?;
             stdout.flush()?;
         }
         Ok(())
     }
+}
+
+enum Location {
+    Replace,
+    Next,
+    End,
 }
 
 struct Terki {
@@ -265,28 +275,34 @@ impl Terki {
         );
     }
 
-    fn display(&mut self, wiki: &str, slug: &str) -> Result<(), Error> {
-        if !self.panes.len() > 0 {
-            let page = self.wikis.get_mut(wiki).unwrap().page(slug).unwrap();
-            self.panes.push(Pane::new(
-                wiki.to_owned(),
-                slug.to_owned(),
-                page.lines(),
-                self.size,
-            ));
-        }
-        let pane = &mut self.panes[0];
-        pane.display()?;
+    fn display(&mut self, wiki: &str, slug: &str, location: Location) -> Result<(), Error> {
+        let page = self.wikis.get_mut(wiki).unwrap().page(slug).unwrap();
+        let pane = Pane::new(wiki.to_owned(), slug.to_owned(), page.lines(), self.size);
+        match (self.panes.len(), location) {
+            (0, _) | (_, Location::End) => {
+                self.panes.push(pane);
+                self.active_pane = self.panes.len() - 1;
+            }
+            (_, Location::Replace) => {
+                self.panes.remove(self.active_pane);
+                self.panes.insert(self.active_pane, pane);
+            }
+            (_, Location::Next) => {
+                self.panes.insert(self.active_pane + 1, pane);
+                self.active_pane += 1;
+            }
+        };
+        self.panes[self.active_pane].display()?;
         Ok(())
     }
 
     fn scroll_down(&mut self) -> Result<(), Error> {
-        self.panes[0].scroll_down()?;
+        self.panes[self.active_pane].scroll_down()?;
         Ok(())
     }
 
     fn scroll_up(&mut self) -> Result<(), Error> {
-        self.panes[0].scroll_up()?;
+        self.panes[self.active_pane].scroll_up()?;
         Ok(())
     }
 
@@ -302,6 +318,16 @@ impl Terki {
                         self.scroll_down()?;
                         continue;
                     }
+                    if event.code == crossterm::event::KeyCode::Left {
+                        self.active_pane -= 1;
+                        self.panes[self.active_pane].display()?;
+                        continue;
+                    }
+                    if event.code == crossterm::event::KeyCode::Right {
+                        self.active_pane += 1;
+                        self.panes[self.active_pane].display()?;
+                        continue;
+                    }
                     println!("{:?}", event);
                     break;
                 }
@@ -313,7 +339,7 @@ impl Terki {
 }
 
 fn run(mut terki: Terki, wiki: &str) -> Result<(), Error> {
-    terki.display(wiki, "welcome-visitors")?;
+    terki.display(wiki, "welcome-visitors", Location::End)?;
     terki.handle_input()?;
     Ok(())
 }
