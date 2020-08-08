@@ -2,7 +2,7 @@ use anyhow::{anyhow, Error, Result};
 use clap::{App, Arg};
 use crossterm::{
     self, cursor,
-    event::{read, Event, KeyCode},
+    event::{read, Event, KeyCode, KeyEvent},
     execute,
     terminal::{
         size, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, ScrollDown, ScrollUp,
@@ -227,12 +227,94 @@ enum Location {
     End,
 }
 
+enum EventAction {
+    Consumed,
+    Close,
+    Run(String),
+    None,
+}
+
+struct Ex {
+    active: bool,
+    buffer: String,
+    cursor_pos: u16,
+}
+
+impl Ex {
+    fn new() -> Ex {
+        Ex {
+            active: false,
+            buffer: "".to_string(),
+            cursor_pos: 0,
+        }
+    }
+
+    fn display(&mut self, row: u16) -> Result<(), Error> {
+        let mut stdout = stdout();
+        stdout
+            .queue(Clear(ClearType::CurrentLine))?
+            .queue(cursor::MoveTo(0, row))?;
+        write!(stdout, ":{}", self.buffer)?;
+        stdout.queue(cursor::MoveTo(self.cursor_pos + 1, row))?;
+        stdout.flush()?;
+        Ok(())
+    }
+
+    fn handle_key_press(&mut self, event: KeyEvent) -> bool {
+        if !self.active {
+            if event.code == KeyCode::Char(':') {
+                self.active = true;
+                return true;
+            }
+            return false;
+        }
+        match event.code {
+            KeyCode::Esc => {
+                self.active = false;
+            }
+            KeyCode::Enter => {
+                self.active = false;
+            }
+            KeyCode::Home => {
+                self.cursor_pos = 0;
+            }
+            KeyCode::End => {
+                self.cursor_pos = max(self.buffer.len() as i16 - 1, 0) as u16;
+            }
+            KeyCode::Left => {
+                self.cursor_pos = max(self.cursor_pos as i16 - 1, 0) as u16;
+            }
+            KeyCode::Right => {
+                self.cursor_pos = min(self.cursor_pos + 1, self.buffer.len() as u16);
+            }
+            KeyCode::Backspace => {
+                if self.buffer.len() > 0 {
+                    let new_cursor_pos = max(self.cursor_pos as i16 - 1, 0) as u16;
+                    let before = &self.buffer[0..new_cursor_pos as usize];
+                    let after = &self.buffer[self.cursor_pos as usize..self.buffer.len()];
+                    self.buffer = [before, after].concat();
+                    self.cursor_pos = new_cursor_pos;
+                } else {
+                    self.active = false;
+                }
+            }
+            KeyCode::Char(c) => {
+                self.buffer.insert(self.cursor_pos as usize, c);
+                self.cursor_pos += 1;
+            }
+            _ => return false,
+        }
+        return true;
+    }
+}
+
 struct Terki {
     wikis: HashMap<String, Wiki>,
     panes: Vec<Pane>,
     active_pane: usize,
     wiki_indexes: HashMap<usize, String>,
     size: (usize, usize),
+    ex: Ex,
 }
 
 impl Terki {
@@ -243,6 +325,7 @@ impl Terki {
             active_pane: 0,
             wiki_indexes: HashMap::new(),
             size,
+            ex: Ex::new(),
         }
     }
 
@@ -316,35 +399,51 @@ impl Terki {
 
     fn handle_input(&mut self) -> Result<(), Error> {
         loop {
-            match read()? {
+            let event = read()?;
+            let mut handled = false;
+            match event {
                 Event::Key(event) => {
-                    if event.code == KeyCode::Up {
-                        self.scroll_up()?;
-                        continue;
+                    if self.ex.active {
+                        handled = self.ex.handle_key_press(event);
                     }
-                    if event.code == KeyCode::Down {
-                        self.scroll_down()?;
-                        continue;
-                    }
-                    if event.code == KeyCode::Left {
-                        let previous_pane = self.active_pane;
-                        self.active_pane = max(self.active_pane as isize - 1, 0) as usize;
-                        if self.active_pane != previous_pane {
+                    if handled {
+                        self.ex.display(self.size.1 as u16 - 1)?;
+                        if !self.ex.active {
                             self.panes[self.active_pane].display()?;
                         }
                         continue;
                     }
-                    if event.code == KeyCode::Right {
-                        let previous_pane = self.active_pane;
-                        self.active_pane = min(self.active_pane + 1, self.panes.len() - 1);
-                        if self.active_pane != previous_pane {
-                            self.panes[self.active_pane].display()?;
+                    match event.code {
+                        KeyCode::Up => {
+                            self.scroll_up()?;
+                            continue;
                         }
-                        continue;
-                    }
-                    if event.code == KeyCode::Char(':') {
-                        self.display("wiki.omen", "game-library", Location::End)?;
-                        continue;
+                        KeyCode::Down => {
+                            self.scroll_down()?;
+                            continue;
+                        }
+                        KeyCode::Left => {
+                            let previous_pane = self.active_pane;
+                            self.active_pane = max(self.active_pane as isize - 1, 0) as usize;
+                            if self.active_pane != previous_pane {
+                                self.panes[self.active_pane].display()?;
+                            }
+                            continue;
+                        }
+                        KeyCode::Right => {
+                            let previous_pane = self.active_pane;
+                            self.active_pane = min(self.active_pane + 1, self.panes.len() - 1);
+                            if self.active_pane != previous_pane {
+                                self.panes[self.active_pane].display()?;
+                            }
+                            continue;
+                        }
+                        KeyCode::Char(':') => {
+                            self.ex.handle_key_press(event);
+                            self.ex.display(self.size.1 as u16 - 1)?;
+                            continue;
+                        }
+                        _ => {}
                     }
                     println!("{:?}", event);
                     break;
