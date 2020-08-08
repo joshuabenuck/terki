@@ -1,4 +1,5 @@
 use anyhow::{Error, Result};
+use clap::{App, Arg};
 use crossterm::{
     self, cursor, execute,
     terminal::{size, EnterAlternateScreen, LeaveAlternateScreen, ScrollDown, ScrollUp, SetSize},
@@ -11,6 +12,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::{stdout, Stdout, Write};
 use std::path::PathBuf;
+use textwrap;
 
 #[derive(Debug)]
 enum PageStore {
@@ -128,12 +130,23 @@ struct Pane {
 
 impl Pane {
     fn new(wiki: String, slug: String, lines: Vec<String>, size: (usize, usize)) -> Pane {
+        let mut wrapped: Vec<String> = Vec::new();
+        for line in lines {
+            for l in textwrap::wrap_iter(&line, size.0) {
+                wrapped.push(l.to_string());
+            }
+            wrapped.push("".to_string());
+        }
+        // lines: lines
+        //     .into_iter()
+        //     .flat_map(|l| textwrap::wrap(&l, size.1).iter().map(|s| s.to_string()))
+        //     .collect(),
         Pane {
             wiki,
             slug,
-            lines,
-            size,
+            lines: wrapped,
             scroll_index: 0,
+            size,
         }
     }
 
@@ -141,16 +154,21 @@ impl Pane {
         let lines = &self.lines;
         let mut stdout = stdout();
         stdout.queue(cursor::MoveTo(0, 0))?;
-        let offset = if lines.len() >= self.size.1 as usize {
-            lines.len() - self.size.1 as usize + 1
-        } else {
-            0
-        };
-        self.scroll_index = offset;
-        for line in lines.iter().skip(offset) {
-            stdout.queue(cursor::MoveToNextLine(1))?;
+        // Reuse for scroll to bottom?
+        // let offset = if lines.len() >= self.size.1 as usize {
+        //     lines.len() - self.size.1 as usize + 1
+        // } else {
+        //     0
+        // };
+        let mut count = 0;
+        for line in lines.iter().skip(self.scroll_index) {
             self.display_line(&mut stdout, line)?;
             self.scroll_index += 1;
+            count += 1;
+            if count >= self.size.1 {
+                break;
+            }
+            stdout.queue(cursor::MoveToNextLine(1))?;
         }
         stdout.flush()?;
         Ok(())
@@ -161,7 +179,7 @@ impl Pane {
             stdout,
             "{}",
             line.chars()
-                .take(self.size.0 as usize - 5)
+                // .take(self.size.0 as usize - 5)
                 .collect::<String>()
         )?)
     }
@@ -170,7 +188,7 @@ impl Pane {
         if self.scroll_index < self.lines.len() {
             let mut stdout = stdout();
             stdout.queue(ScrollUp(1))?;
-            stdout.queue(cursor::MoveTo(0, (self.size.1 - 1) as u16))?;
+            stdout.queue(cursor::MoveTo(0, (self.size.1) as u16))?;
             self.display_line(&mut stdout, &self.lines[self.scroll_index])?;
             self.scroll_index += 1;
             stdout.flush()?;
@@ -179,13 +197,15 @@ impl Pane {
     }
 
     fn scroll_up(&mut self) -> Result<(), Error> {
-        if self.scroll_index as isize - self.size.1 as isize >= 0 {
+        // scroll_index is on a line that has not been displayed
+        // need to go one earlier than it in order to scroll back
+        if self.scroll_index as isize - self.size.1 as isize - 1 >= 0 {
             let mut stdout = stdout();
             stdout.queue(ScrollDown(1))?;
             stdout.queue(cursor::MoveTo(0, 0))?;
             self.display_line(
                 &mut stdout,
-                &self.lines[self.scroll_index - self.size.1 as usize],
+                &self.lines[self.scroll_index - self.size.1 - 1 as usize],
             )?;
             self.scroll_index -= 1;
             stdout.flush()?;
@@ -236,9 +256,13 @@ impl Terki {
         self.wikis.get_mut(name)
     }
 
-    fn add_remote(&mut self, url: String) {
-        self.wikis
-            .insert(url.to_owned(), Wiki::new(PageStore::Http { url }));
+    fn add_remote(&mut self, url: &str) {
+        self.wikis.insert(
+            url.to_owned(),
+            Wiki::new(PageStore::Http {
+                url: url.to_owned(),
+            }),
+        );
     }
 
     fn display(&mut self, wiki: &str, slug: &str) -> Result<(), Error> {
@@ -288,29 +312,49 @@ impl Terki {
     }
 }
 
-fn run(mut terki: Terki) -> Result<(), Error> {
-    terki.display("localhost", "welcome-visitors")?;
+fn run(mut terki: Terki, wiki: &str) -> Result<(), Error> {
+    terki.display(wiki, "welcome-visitors")?;
     terki.handle_input()?;
     Ok(())
 }
 
 fn main() -> Result<(), Error> {
-    let wikidir = dirs::home_dir()
-        .expect("unable to get home dir")
-        .join(".wiki");
-    if !wikidir.exists() {
-        println!("~/.wiki does not exist!");
-        std::process::exit(1);
-    }
-
+    let matches = App::new("terki")
+        .arg(Arg::with_name("url").long("url").takes_value(true))
+        .arg(Arg::with_name("local").long("local").takes_value(true))
+        .get_matches();
     let size = size()?;
     let mut terki = Terki::new((size.0 as usize, size.1 as usize));
-    terki.add_local(wikidir).expect("Unable to add local wiki!");
+    let wiki = if let Some(path) = matches.value_of("local") {
+        let mut wikidir = dirs::home_dir()
+            .expect("unable to get home dir")
+            .join(".wiki");
+        if !wikidir.exists() {
+            println!("~/.wiki does not exist!");
+            std::process::exit(1);
+        }
+        if path != "localhost" {
+            wikidir = wikidir.join(path);
+            if !wikidir.exists() {
+                println!("{} does not exist!", wikidir.display());
+                std::process::exit(1);
+            }
+        }
+        terki.add_local(wikidir).expect("Unable to add local wiki!");
+        path
+    } else if let Some(url) = matches.value_of("url") {
+        terki.add_remote(url);
+        url
+    } else {
+        println!("Must pass in at least one of: --url or --local");
+        std::process::exit(1);
+    };
+
     // let wiki = terki.wikis.get_mut("localhost");
     let mut stdout = stdout();
     println!("{}, {}", size.0, size.1);
     execute!(stdout, EnterAlternateScreen, SetSize(size.0, size.1 + 1000))?;
-    run(terki)?;
+    run(terki, wiki)?;
     execute!(stdout, LeaveAlternateScreen)?;
     Ok(())
 }
