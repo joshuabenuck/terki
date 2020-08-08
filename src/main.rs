@@ -13,6 +13,7 @@ use crossterm::{
 use dirs;
 use serde::Deserialize;
 use serde_json::Value;
+use shell_words;
 use std::cmp::{max, min};
 use std::collections::HashMap;
 use std::fs;
@@ -22,8 +23,13 @@ use textwrap;
 
 #[derive(Debug)]
 enum PageStore {
-    Local { path: PathBuf },
-    Http { url: String },
+    Local {
+        path: PathBuf,
+    },
+    Http {
+        url: String,
+        contents: Option<String>,
+    },
 }
 
 impl PageStore {
@@ -32,7 +38,7 @@ impl PageStore {
             PageStore::Local { path } => {
                 serde_json::from_str(&fs::read_to_string(path.join("pages").join(slug))?)?
             }
-            PageStore::Http { url } => return Err(anyhow!("Unsupported")),
+            PageStore::Http { url, .. } => return Err(anyhow!("Unsupported")),
         };
         Ok(page)
     }
@@ -143,10 +149,6 @@ impl Pane {
             }
             wrapped.push("".to_string());
         }
-        // lines: lines
-        //     .into_iter()
-        //     .flat_map(|l| textwrap::wrap(&l, size.1).iter().map(|s| s.to_string()))
-        //     .collect(),
         Pane {
             wiki,
             slug,
@@ -182,13 +184,7 @@ impl Pane {
     }
 
     fn display_line(&self, stdout: &mut Stdout, line: &str) -> Result<(), Error> {
-        Ok(write!(
-            stdout,
-            "{}",
-            line.chars()
-                // .take(self.size.0 as usize - 5)
-                .collect::<String>()
-        )?)
+        Ok(write!(stdout, "{}", line.chars().collect::<String>())?)
     }
 
     fn scroll_down(&mut self) -> Result<(), Error> {
@@ -207,8 +203,6 @@ impl Pane {
     }
 
     fn scroll_up(&mut self) -> Result<(), Error> {
-        // scroll_index is on a line that has not been displayed
-        // need to go one earlier than it in order to scroll back
         if self.scroll_index > 0 {
             let mut stdout = stdout();
             stdout.queue(ScrollDown(1))?;
@@ -227,9 +221,9 @@ enum Location {
     End,
 }
 
-enum EventAction {
+#[derive(PartialEq)]
+enum ExEventStatus {
     Consumed,
-    Close,
     Run(String),
     None,
 }
@@ -260,13 +254,13 @@ impl Ex {
         Ok(())
     }
 
-    fn handle_key_press(&mut self, event: KeyEvent) -> bool {
+    fn handle_key_press(&mut self, event: KeyEvent) -> ExEventStatus {
         if !self.active {
             if event.code == KeyCode::Char(':') {
                 self.active = true;
-                return true;
+                return ExEventStatus::Consumed;
             }
-            return false;
+            return ExEventStatus::None;
         }
         match event.code {
             KeyCode::Esc => {
@@ -274,6 +268,9 @@ impl Ex {
             }
             KeyCode::Enter => {
                 self.active = false;
+                let command = std::mem::replace(&mut self.buffer, "".to_string());
+                self.cursor_pos = 0;
+                return ExEventStatus::Run(command);
             }
             KeyCode::Home => {
                 self.cursor_pos = 0;
@@ -302,9 +299,9 @@ impl Ex {
                 self.buffer.insert(self.cursor_pos as usize, c);
                 self.cursor_pos += 1;
             }
-            _ => return false,
+            _ => return ExEventStatus::None,
         }
-        return true;
+        return ExEventStatus::Consumed;
     }
 }
 
@@ -357,6 +354,7 @@ impl Terki {
             url.to_owned(),
             Wiki::new(PageStore::Http {
                 url: url.to_owned(),
+                contents: None,
             }),
         );
     }
@@ -397,16 +395,54 @@ impl Terki {
         Ok(())
     }
 
+    fn run_command(&mut self, command: &str) -> Result<(), Error> {
+        let parts = shell_words::split(command)?;
+        if parts.len() == 0 {
+            // err, no command specified
+            return Ok(());
+        }
+        let command = &parts[0];
+        match command.as_str() {
+            "open" => {
+                if parts.len() < 2 {
+                    // err, not enough args
+                    return Ok(());
+                }
+                let args: &[String] = &parts[1..parts.len()];
+                if args.len() == 1 {
+                    let wiki = self.panes[self.active_pane].wiki.clone();
+                    self.display(&wiki, &args[0], Location::Next)?;
+                }
+            }
+            "close" => {
+                if self.panes.len() > 1 {
+                    self.panes.remove(self.active_pane);
+                    if self.active_pane >= self.panes.len() {
+                        self.active_pane = self.panes.len() - 1;
+                    }
+                }
+            }
+            _ => {
+                // err, unrecognized command
+                return Ok(());
+            }
+        }
+        Ok(())
+    }
+
     fn handle_input(&mut self) -> Result<(), Error> {
         loop {
             let event = read()?;
-            let mut handled = false;
+            let mut handled = ExEventStatus::None;
             match event {
                 Event::Key(event) => {
                     if self.ex.active {
                         handled = self.ex.handle_key_press(event);
                     }
-                    if handled {
+                    if handled != ExEventStatus::None {
+                        if let ExEventStatus::Run(command) = handled {
+                            self.run_command(&command)?;
+                        }
                         self.ex.display(self.size.1 as u16 - 1)?;
                         if !self.ex.active {
                             self.panes[self.active_pane].display()?;
