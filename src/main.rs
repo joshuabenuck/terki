@@ -1,7 +1,9 @@
-use anyhow::{Error, Result};
+use anyhow::{anyhow, Error, Result};
 use clap::{App, Arg};
 use crossterm::{
-    self, cursor, execute,
+    self, cursor,
+    event::{read, Event, KeyCode},
+    execute,
     terminal::{
         size, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, ScrollDown, ScrollUp,
         SetSize,
@@ -11,6 +13,7 @@ use crossterm::{
 use dirs;
 use serde::Deserialize;
 use serde_json::Value;
+use std::cmp::{max, min};
 use std::collections::HashMap;
 use std::fs;
 use std::io::{stdout, Stdout, Write};
@@ -29,7 +32,7 @@ impl PageStore {
             PageStore::Local { path } => {
                 serde_json::from_str(&fs::read_to_string(path.join("pages").join(slug))?)?
             }
-            PageStore::Http { url } => return Err(anyhow::anyhow!("Unsupported")),
+            PageStore::Http { url } => return Err(anyhow!("Unsupported")),
         };
         Ok(page)
     }
@@ -276,7 +279,12 @@ impl Terki {
     }
 
     fn display(&mut self, wiki: &str, slug: &str, location: Location) -> Result<(), Error> {
-        let page = self.wikis.get_mut(wiki).unwrap().page(slug).unwrap();
+        let page = self
+            .wikis
+            .get_mut(wiki)
+            .expect("wiki is missing")
+            .page(slug)
+            .expect("page is missing");
         let pane = Pane::new(wiki.to_owned(), slug.to_owned(), page.lines(), self.size);
         match (self.panes.len(), location) {
             (0, _) | (_, Location::End) => {
@@ -308,24 +316,34 @@ impl Terki {
 
     fn handle_input(&mut self) -> Result<(), Error> {
         loop {
-            match crossterm::event::read()? {
-                crossterm::event::Event::Key(event) => {
-                    if event.code == crossterm::event::KeyCode::Up {
+            match read()? {
+                Event::Key(event) => {
+                    if event.code == KeyCode::Up {
                         self.scroll_up()?;
                         continue;
                     }
-                    if event.code == crossterm::event::KeyCode::Down {
+                    if event.code == KeyCode::Down {
                         self.scroll_down()?;
                         continue;
                     }
-                    if event.code == crossterm::event::KeyCode::Left {
-                        self.active_pane -= 1;
-                        self.panes[self.active_pane].display()?;
+                    if event.code == KeyCode::Left {
+                        let previous_pane = self.active_pane;
+                        self.active_pane = max(self.active_pane as isize - 1, 0) as usize;
+                        if self.active_pane != previous_pane {
+                            self.panes[self.active_pane].display()?;
+                        }
                         continue;
                     }
-                    if event.code == crossterm::event::KeyCode::Right {
-                        self.active_pane += 1;
-                        self.panes[self.active_pane].display()?;
+                    if event.code == KeyCode::Right {
+                        let previous_pane = self.active_pane;
+                        self.active_pane = min(self.active_pane + 1, self.panes.len() - 1);
+                        if self.active_pane != previous_pane {
+                            self.panes[self.active_pane].display()?;
+                        }
+                        continue;
+                    }
+                    if event.code == KeyCode::Char(':') {
+                        self.display("wiki.omen", "game-library", Location::End)?;
                         continue;
                     }
                     println!("{:?}", event);
