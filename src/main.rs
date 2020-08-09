@@ -133,13 +133,16 @@ impl Page {
                 continue;
             }
             if item.r#type != "paragraph" {
-                prefix = "\t";
+                prefix = "  ";
                 lines.push(item.r#type.to_owned());
             }
             let text = item.text.as_deref().unwrap_or("<empty>");
             for line in text.split("\n") {
-                lines.push(format!("{}{}", prefix, line));
+                for l in textwrap::wrap_iter(&line, cols - prefix.len()) {
+                    lines.push(format!("{}{}", prefix, l.to_string()));
+                }
             }
+            lines.push("".to_string());
         }
         lines
     }
@@ -155,17 +158,10 @@ struct Pane {
 
 impl Pane {
     fn new(wiki: String, slug: String, lines: Vec<String>, size: (usize, usize)) -> Pane {
-        let mut wrapped: Vec<String> = Vec::new();
-        for line in lines {
-            for l in textwrap::wrap_iter(&line, size.0) {
-                wrapped.push(l.to_string());
-            }
-            wrapped.push("".to_string());
-        }
         Pane {
             wiki,
             slug,
-            lines: wrapped,
+            lines,
             scroll_index: 0,
             size,
         }
