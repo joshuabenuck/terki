@@ -123,10 +123,15 @@ struct Page {
 }
 
 impl Page {
-    fn lines(&self) -> Vec<String> {
+    fn lines(&self, cols: usize) -> Vec<String> {
         let mut lines = Vec::new();
         for item in self.story.iter() {
             let mut prefix = "";
+            if item.r#type == "pagefold" {
+                let heading = format!(" {} ", item.text.as_deref().unwrap_or(""));
+                lines.push(format!("{:-^1$}", heading, cols));
+                continue;
+            }
             if item.r#type != "paragraph" {
                 prefix = "\t";
                 lines.push(item.r#type.to_owned());
@@ -377,7 +382,12 @@ impl Terki {
             .ok_or(anyhow!("wiki not found: {}", wiki))?
             .page(slug)
             .await?;
-        let pane = Pane::new(wiki.to_owned(), slug.to_owned(), page.lines(), self.size);
+        let pane = Pane::new(
+            wiki.to_owned(),
+            slug.to_owned(),
+            page.lines(self.size.0),
+            self.size,
+        );
         match (self.panes.len(), location) {
             (0, _) | (_, Location::End) => {
                 self.panes.push(pane);
