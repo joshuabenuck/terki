@@ -11,6 +11,7 @@ use crossterm::{
     QueueableCommand,
 };
 use dirs;
+use reqwest;
 use serde::Deserialize;
 use serde_json::Value;
 use shell_words;
@@ -20,6 +21,8 @@ use std::fs;
 use std::io::{stdout, Stdout, Write};
 use std::path::PathBuf;
 use textwrap;
+use tokio;
+use url::Url;
 
 #[derive(Debug)]
 enum PageStore {
@@ -28,17 +31,25 @@ enum PageStore {
     },
     Http {
         url: String,
-        contents: Option<String>,
+        cache: HashMap<String, String>,
     },
 }
 
 impl PageStore {
-    fn retrieve(&mut self, slug: &str) -> Result<Page> {
+    async fn retrieve(&mut self, slug: &str) -> Result<Page> {
         let page = match self {
             PageStore::Local { path } => {
                 serde_json::from_str(&fs::read_to_string(path.join("pages").join(slug))?)?
             }
-            PageStore::Http { url, .. } => return Err(anyhow!("Unsupported")),
+            PageStore::Http { url, cache } => {
+                if !cache.contains_key(slug) {
+                    let url = Url::parse(url)?;
+                    let page_url = url.join(&format!("{}.json", slug))?;
+                    let body = reqwest::get(page_url).await?.text().await?;
+                    cache.insert(slug.to_owned(), body);
+                }
+                serde_json::from_str(cache.get(slug).as_ref().unwrap())?
+            }
         };
         Ok(page)
     }
@@ -57,15 +68,12 @@ impl Wiki {
         }
     }
 
-    fn page<'a>(&'a mut self, slug: &str) -> Option<&'a Page> {
+    async fn page<'a>(&'a mut self, slug: &str) -> Result<&'a Page, Error> {
         if !self.pages.contains_key(slug) {
-            let retrieved = self.store.retrieve(&slug);
-            if retrieved.is_ok() {
-                self.pages.insert(slug.to_owned(), retrieved.unwrap());
-            }
-            // log err?
+            let retrieved = self.store.retrieve(&slug).await?;
+            self.pages.insert(slug.to_owned(), retrieved);
         }
-        self.pages.get(slug)
+        Ok(self.pages.get(slug).unwrap())
     }
 }
 
@@ -349,23 +357,26 @@ impl Terki {
         self.wikis.get_mut(name)
     }
 
-    fn add_remote(&mut self, url: &str) {
+    fn add_remote(&mut self, url: &str) -> Result<String, Error> {
+        let parsed = Url::parse(url)?;
+        let host = parsed.host_str().ok_or(anyhow!("No host in url!"))?;
         self.wikis.insert(
-            url.to_owned(),
+            host.to_owned(),
             Wiki::new(PageStore::Http {
                 url: url.to_owned(),
-                contents: None,
+                cache: HashMap::new(),
             }),
         );
+        Ok(host.to_owned())
     }
 
-    fn display(&mut self, wiki: &str, slug: &str, location: Location) -> Result<(), Error> {
+    async fn display(&mut self, wiki: &str, slug: &str, location: Location) -> Result<(), Error> {
         let page = self
             .wikis
             .get_mut(wiki)
-            .expect("wiki is missing")
+            .ok_or(anyhow!("wiki not found: {}", wiki))?
             .page(slug)
-            .expect("page is missing");
+            .await?;
         let pane = Pane::new(wiki.to_owned(), slug.to_owned(), page.lines(), self.size);
         match (self.panes.len(), location) {
             (0, _) | (_, Location::End) => {
@@ -395,7 +406,7 @@ impl Terki {
         Ok(())
     }
 
-    fn run_command(&mut self, command: &str) -> Result<(), Error> {
+    async fn run_command(&mut self, command: &str) -> Result<(), Error> {
         let parts = shell_words::split(command)?;
         if parts.len() == 0 {
             // err, no command specified
@@ -411,7 +422,7 @@ impl Terki {
                 let args: &[String] = &parts[1..parts.len()];
                 if args.len() == 1 {
                     let wiki = self.panes[self.active_pane].wiki.clone();
-                    self.display(&wiki, &args[0], Location::Next)?;
+                    self.display(&wiki, &args[0], Location::Next).await?;
                 }
             }
             "close" => {
@@ -430,7 +441,7 @@ impl Terki {
         Ok(())
     }
 
-    fn handle_input(&mut self) -> Result<(), Error> {
+    async fn handle_input(&mut self) -> Result<(), Error> {
         loop {
             let event = read()?;
             let mut handled = ExEventStatus::None;
@@ -441,7 +452,7 @@ impl Terki {
                     }
                     if handled != ExEventStatus::None {
                         if let ExEventStatus::Run(command) = handled {
-                            self.run_command(&command)?;
+                            self.run_command(&command).await?;
                         }
                         self.ex.display(self.size.1 as u16 - 1)?;
                         if !self.ex.active {
@@ -491,13 +502,16 @@ impl Terki {
     }
 }
 
-fn run(mut terki: Terki, wiki: &str) -> Result<(), Error> {
-    terki.display(wiki, "welcome-visitors", Location::End)?;
-    terki.handle_input()?;
+async fn run(mut terki: Terki, wiki: &str) -> Result<(), Error> {
+    terki
+        .display(wiki, "welcome-visitors", Location::End)
+        .await?;
+    terki.handle_input().await?;
     Ok(())
 }
 
-fn main() -> Result<(), Error> {
+#[tokio::main]
+async fn main() -> Result<(), Error> {
     let matches = App::new("terki")
         .arg(Arg::with_name("url").long("url").takes_value(true))
         .arg(Arg::with_name("local").long("local").takes_value(true))
@@ -520,10 +534,9 @@ fn main() -> Result<(), Error> {
             }
         }
         terki.add_local(wikidir).expect("Unable to add local wiki!");
-        path
+        path.to_owned()
     } else if let Some(url) = matches.value_of("url") {
-        terki.add_remote(url);
-        url
+        terki.add_remote(url)?
     } else {
         println!("Must pass in at least one of: --url or --local");
         std::process::exit(1);
@@ -533,7 +546,7 @@ fn main() -> Result<(), Error> {
     let mut stdout = stdout();
     println!("{}, {}", size.0, size.1);
     execute!(stdout, EnterAlternateScreen, SetSize(size.0, size.1 + 1000))?;
-    run(terki, wiki)?;
+    let result = run(terki, &wiki).await;
     execute!(stdout, LeaveAlternateScreen)?;
-    Ok(())
+    result
 }
