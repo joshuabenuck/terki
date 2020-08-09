@@ -4,6 +4,7 @@ use crossterm::{
     self, cursor,
     event::{read, Event, KeyCode, KeyEvent},
     execute,
+    style::{style, Attribute},
     terminal::{
         size, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, ScrollDown, ScrollUp,
         SetSize,
@@ -68,12 +69,12 @@ impl Wiki {
         }
     }
 
-    async fn page<'a>(&'a mut self, slug: &str) -> Result<&'a Page, Error> {
+    async fn page<'a>(&'a mut self, slug: &str) -> Result<&'a mut Page, Error> {
         if !self.pages.contains_key(slug) {
             let retrieved = self.store.retrieve(&slug).await?;
             self.pages.insert(slug.to_owned(), retrieved);
         }
-        Ok(self.pages.get(slug).unwrap())
+        Ok(self.pages.get_mut(slug).unwrap())
     }
 }
 
@@ -120,38 +121,68 @@ struct Page {
     title: String,
     story: Vec<Item>,
     journal: Value,
+    #[serde(skip)]
+    links: Vec<(String, String)>,
+    #[serde(skip)]
+    // the item a line belongs to
+    line_item: Vec<Option<usize>>,
 }
 
 impl Page {
-    fn lines(&self, cols: usize) -> Vec<String> {
+    fn render_item(&self, cols: usize, item: &Item) -> Vec<String> {
         let mut lines = Vec::new();
-        for item in self.story.iter() {
-            let mut prefix = "";
-            if item.r#type == "pagefold" {
-                let heading = format!(" {} ", item.text.as_deref().unwrap_or(""));
-                lines.push(format!("{:-^1$}", heading, cols));
-                continue;
+        let mut prefix = "";
+        if item.r#type == "pagefold" {
+            let heading = format!(" {} ", item.text.as_deref().unwrap_or(""));
+            lines.push(format!("{:-^1$}", heading, cols));
+            return lines;
+        }
+        if item.r#type != "paragraph" {
+            prefix = "  ";
+            lines.push(item.r#type.to_owned());
+        }
+        let text = item.text.as_deref().unwrap_or("<empty>");
+        if item.r#type == "paragraph" {
+            // search for links
+            // for each link
+            // add to links
+            // render shortened external link
+            // render as a link
+        }
+        for line in text.split("\n") {
+            for l in textwrap::wrap_iter(&line, cols - prefix.len()) {
+                lines.push(format!("{}{}", prefix, l.to_string()));
             }
-            if item.r#type != "paragraph" {
-                prefix = "  ";
-                lines.push(item.r#type.to_owned());
+        }
+        return lines;
+    }
+
+    fn lines(&mut self, cols: usize) -> Vec<String> {
+        let mut lines = Vec::new();
+        for (i, item) in self.story.iter().enumerate() {
+            for line in self.render_item(cols, item) {
+                self.line_item.push(Some(i));
+                lines.push(line);
             }
-            let text = item.text.as_deref().unwrap_or("<empty>");
-            for line in text.split("\n") {
-                for l in textwrap::wrap_iter(&line, cols - prefix.len()) {
-                    lines.push(format!("{}{}", prefix, l.to_string()));
-                }
-            }
+            self.line_item.push(None);
             lines.push("".to_string());
         }
         lines
     }
 }
 
+struct Highlight {
+    line: usize,
+    index: usize,
+    pattern: String,
+}
+
 struct Pane {
     wiki: String,
     slug: String,
     lines: Vec<String>,
+    highlighted_lines: Vec<String>,
+    current_highlight: Option<Highlight>,
     scroll_index: usize,
     size: (usize, usize),
 }
@@ -161,18 +192,28 @@ impl Pane {
         Pane {
             wiki,
             slug,
-            lines,
+            lines: lines.clone(),
+            highlighted_lines: lines,
+            current_highlight: None,
             scroll_index: 0,
             size,
         }
     }
 
-    fn display(&mut self) -> Result<(), Error> {
-        let lines = &self.lines;
+    fn status(&self, status: &str) -> Result<(), Error> {
         let mut stdout = stdout();
         stdout
-            .queue(Clear(ClearType::All))?
-            .queue(cursor::MoveTo(0, 0))?;
+            .queue(cursor::MoveTo(0, self.size.1 as u16))?
+            .queue(Clear(ClearType::CurrentLine))?;
+        write!(stdout, "{}", status)?;
+        stdout.flush()?;
+        Ok(())
+    }
+
+    fn display(&mut self) -> Result<(), Error> {
+        let lines = &mut self.lines;
+        let mut stdout = stdout();
+        stdout.queue(cursor::MoveTo(0, 0))?;
         // Reuse for scroll to bottom?
         // let offset = if lines.len() >= self.size.1 as usize {
         //     lines.len() - self.size.1 as usize + 1
@@ -180,20 +221,93 @@ impl Pane {
         //     0
         // };
         let mut count = 0;
-        for line in lines.iter().skip(self.scroll_index) {
-            self.display_line(&mut stdout, line)?;
+        for (i, line) in lines.iter().enumerate().skip(self.scroll_index) {
+            let mut line = line.clone();
+            if let Some(highlight) = &self.current_highlight {
+                if highlight.line == i {
+                    line.replace_range(
+                        highlight.index..highlight.index + highlight.pattern.len(),
+                        &style(&highlight.pattern)
+                            .attribute(Attribute::Bold)
+                            .to_string(),
+                    );
+                }
+            }
+            write!(stdout, "{}", line)?;
             count += 1;
-            if count >= self.size.1 {
+            if count >= self.size.1 - 1 {
                 break;
             }
             stdout.queue(cursor::MoveToNextLine(1))?;
+        }
+        for _ in count..self.size.1 - 1 {
+            stdout.queue(Clear(ClearType::CurrentLine))?;
         }
         stdout.flush()?;
         Ok(())
     }
 
-    fn display_line(&self, stdout: &mut Stdout, line: &str) -> Result<(), Error> {
-        Ok(write!(stdout, "{}", line.chars().collect::<String>())?)
+    fn find_highlight(&self, pattern: &str, offset: usize) -> Option<Highlight> {
+        for (i, line) in self.lines.iter().enumerate().skip(offset) {
+            let index = line.find(&pattern);
+            if let Some(index) = index {
+                return Some(Highlight {
+                    line: i,
+                    index,
+                    pattern: pattern.to_string(),
+                });
+            }
+        }
+        return None;
+    }
+
+    // fn highlight(&mut self, pattern: &str, dir: isize) -> Result<(), Error> {}
+
+    // fn highlight_prev(&mut self, pattern: &str) -> Result<(), Error> {}
+
+    fn highlight_next(&mut self, pattern: &str) -> Result<(), Error> {
+        // reset if new pattern isn't the same as the old one
+        match &self.current_highlight {
+            Some(highlight) if highlight.pattern != pattern => {
+                self.highlighted_lines[highlight.line] = self.lines[highlight.line].clone();
+                std::mem::replace(&mut self.current_highlight, None);
+                self.status("changed")?;
+                return Ok(());
+            }
+            _ => {}
+        };
+        // find the next match
+        self.current_highlight = match &self.current_highlight {
+            None => {
+                // if no match, find the first match
+                self.status("first")?;
+                self.find_highlight(pattern, self.scroll_index)
+            }
+            Some(highlight) => {
+                self.status("next")?;
+                let line = &self.lines[highlight.line];
+                let next_index = line[highlight.index + pattern.len()..line.len()].find(pattern);
+                match next_index {
+                    // if there's another match on the current line, use it
+                    Some(index) => Some(Highlight {
+                        // index is relative to the subset of the line scanned
+                        index: highlight.index + index,
+                        line: highlight.line,
+                        pattern: highlight.pattern.clone(),
+                    }),
+                    // otherwise, look on subsequent lines
+                    None => self.find_highlight(pattern, highlight.line + 1),
+                }
+            }
+        };
+        // match &self.current_highlight {
+        //     None => self.status("none")?,
+        //     Some(highlight) => self.status(&format!(
+        //         "line: {}; index: {}",
+        //         highlight.line, highlight.index
+        //     ))?,
+        // };
+        Ok(())
     }
 
     fn scroll_down(&mut self) -> Result<(), Error> {
@@ -202,8 +316,9 @@ impl Pane {
             stdout.queue(ScrollUp(1))?;
             stdout.queue(cursor::MoveTo(0, (self.size.1) as u16))?;
             self.scroll_index += 1;
-            self.display_line(
-                &mut stdout,
+            write!(
+                stdout,
+                "{}",
                 &self.lines[self.scroll_index + self.size.1 - 1],
             )?;
             stdout.flush()?;
@@ -217,7 +332,7 @@ impl Pane {
             stdout.queue(ScrollDown(1))?;
             stdout.queue(cursor::MoveTo(0, 0))?;
             self.scroll_index -= 1;
-            self.display_line(&mut stdout, &self.lines[self.scroll_index])?;
+            write!(&mut stdout, "{}", &self.lines[self.scroll_index])?;
             stdout.flush()?;
         }
         Ok(())
@@ -489,6 +604,11 @@ impl Terki {
                             if self.active_pane != previous_pane {
                                 self.panes[self.active_pane].display()?;
                             }
+                            continue;
+                        }
+                        KeyCode::Char('n') => {
+                            self.panes[self.active_pane].highlight_next("[[")?;
+                            self.panes[self.active_pane].display()?;
                             continue;
                         }
                         KeyCode::Char(':') => {
