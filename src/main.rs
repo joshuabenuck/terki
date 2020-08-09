@@ -2,7 +2,10 @@ use anyhow::{anyhow, Error, Result};
 use clap::{App, Arg};
 use crossterm::{
     self, cursor,
-    event::{read, Event, KeyCode, KeyEvent},
+    event::{
+        read, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, MouseButton,
+        MouseEvent,
+    },
     execute,
     style::{style, Attribute},
     terminal::{
@@ -222,6 +225,7 @@ impl Pane {
         // };
         let mut count = 0;
         for (i, line) in lines.iter().enumerate().skip(self.scroll_index) {
+            stdout.queue(Clear(ClearType::CurrentLine))?;
             let mut line = line.clone();
             if let Some(highlight) = &self.current_highlight {
                 if highlight.line == i {
@@ -235,16 +239,27 @@ impl Pane {
             }
             write!(stdout, "{}", line)?;
             count += 1;
+            stdout.queue(cursor::MoveToNextLine(1))?;
             if count >= self.size.1 - 1 {
                 break;
             }
-            stdout.queue(cursor::MoveToNextLine(1))?;
         }
         for _ in count..self.size.1 - 1 {
             stdout.queue(Clear(ClearType::CurrentLine))?;
+            stdout.queue(cursor::MoveToNextLine(1))?;
         }
         stdout.flush()?;
         Ok(())
+    }
+
+    fn find_link(&self, x: u16, y: u16) -> Option<String> {
+        let line = &self.lines[y as usize];
+        let start = line[0..x as usize].rfind("[[");
+        let end = start.and_then(|start| line[start..line.len()].find("]]"));
+        match (start, end) {
+            (Some(start), Some(end)) => Some(line[start + 2..end].to_string()),
+            _ => None,
+        }
     }
 
     fn find_highlight(&self, pattern: &str, offset: usize) -> Option<Highlight> {
@@ -311,17 +326,19 @@ impl Pane {
     }
 
     fn scroll_down(&mut self) -> Result<(), Error> {
-        if self.scroll_index + self.size.1 < self.lines.len() {
+        if self.scroll_index + self.size.1 - 1 < self.lines.len() {
             let mut stdout = stdout();
             stdout.queue(ScrollUp(1))?;
-            stdout.queue(cursor::MoveTo(0, (self.size.1) as u16))?;
+            stdout.queue(cursor::MoveTo(0, (self.size.1 - 2) as u16))?;
             self.scroll_index += 1;
             write!(
                 stdout,
                 "{}",
-                &self.lines[self.scroll_index + self.size.1 - 1],
+                // ignore status line
+                &self.lines[self.scroll_index + self.size.1 - 2],
             )?;
             stdout.flush()?;
+            self.status("")?;
         }
         Ok(())
     }
@@ -334,6 +351,7 @@ impl Pane {
             self.scroll_index -= 1;
             write!(&mut stdout, "{}", &self.lines[self.scroll_index])?;
             stdout.flush()?;
+            self.status("")?;
         }
         Ok(())
     }
@@ -370,10 +388,12 @@ impl Ex {
     fn display(&mut self, row: u16) -> Result<(), Error> {
         let mut stdout = stdout();
         stdout
-            .queue(Clear(ClearType::CurrentLine))?
-            .queue(cursor::MoveTo(0, row))?;
-        write!(stdout, ":{}", self.buffer)?;
-        stdout.queue(cursor::MoveTo(self.cursor_pos + 1, row))?;
+            .queue(cursor::MoveTo(0, row))?
+            .queue(Clear(ClearType::CurrentLine))?;
+        if self.active {
+            write!(stdout, ":{}", self.buffer)?;
+            stdout.queue(cursor::MoveTo(self.cursor_pos + 1, row))?;
+        }
         stdout.flush()?;
         Ok(())
     }
@@ -567,6 +587,16 @@ impl Terki {
             let event = read()?;
             let mut handled = ExEventStatus::None;
             match event {
+                Event::Mouse(event) => match event {
+                    MouseEvent::Down(_button, x, y, _modifiers) => {
+                        let link = self.panes[self.active_pane].find_link(x, y);
+                        if let Some(link) = link {
+                            let link = link.to_lowercase().replace(" ", "-");
+                            self.run_command(&format!("open {}", link)).await?;
+                        }
+                    }
+                    _ => {}
+                },
                 Event::Key(event) => {
                     if self.ex.active {
                         handled = self.ex.handle_key_press(event);
@@ -671,8 +701,13 @@ async fn main() -> Result<(), Error> {
     // let wiki = terki.wikis.get_mut("localhost");
     let mut stdout = stdout();
     println!("{}, {}", size.0, size.1);
-    execute!(stdout, EnterAlternateScreen, SetSize(size.0, size.1 + 1000))?;
+    execute!(
+        stdout,
+        EnterAlternateScreen,
+        SetSize(size.0, size.1 + 1000),
+        EnableMouseCapture
+    )?;
     let result = run(terki, &wiki).await;
-    execute!(stdout, LeaveAlternateScreen)?;
+    execute!(stdout, LeaveAlternateScreen, DisableMouseCapture)?;
     result
 }
