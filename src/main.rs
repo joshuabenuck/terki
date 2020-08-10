@@ -534,6 +534,24 @@ impl Terki {
         Ok(())
     }
 
+    fn previous_pane(&mut self) -> Result<(), Error> {
+        let previous_pane = self.active_pane;
+        self.active_pane = max(self.active_pane as isize - 1, 0) as usize;
+        if self.active_pane != previous_pane {
+            self.panes[self.active_pane].display()?;
+        }
+        Ok(())
+    }
+
+    fn next_pane(&mut self) -> Result<(), Error> {
+        let previous_pane = self.active_pane;
+        self.active_pane = min(self.active_pane + 1, self.panes.len() - 1);
+        if self.active_pane != previous_pane {
+            self.panes[self.active_pane].display()?;
+        }
+        Ok(())
+    }
+
     async fn handle_input(&mut self) -> Result<(), Error> {
         loop {
             let event = read()?;
@@ -574,19 +592,11 @@ impl Terki {
                             continue;
                         }
                         KeyCode::Left => {
-                            let previous_pane = self.active_pane;
-                            self.active_pane = max(self.active_pane as isize - 1, 0) as usize;
-                            if self.active_pane != previous_pane {
-                                self.panes[self.active_pane].display()?;
-                            }
+                            self.previous_pane()?;
                             continue;
                         }
                         KeyCode::Right => {
-                            let previous_pane = self.active_pane;
-                            self.active_pane = min(self.active_pane + 1, self.panes.len() - 1);
-                            if self.active_pane != previous_pane {
-                                self.panes[self.active_pane].display()?;
-                            }
+                            self.next_pane()?;
                             continue;
                         }
                         KeyCode::Char('o') => {
