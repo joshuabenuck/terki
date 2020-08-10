@@ -674,6 +674,21 @@ impl Terki {
                             }
                             continue;
                         }
+                        KeyCode::Char('o') => {
+                            self.ex.active = true;
+                            self.ex.buffer = "open ".to_string();
+                            self.ex.cursor_pos = "open ".len() as u16;
+                            self.ex.display(self.size.1 as u16 - 1)?;
+                            continue;
+                        }
+                        KeyCode::Char('x') => {
+                            self.run_command("close").await?;
+                            self.panes[self.active_pane].display()?;
+                            continue;
+                        }
+                        KeyCode::Char('e') => {
+                            continue;
+                        }
                         KeyCode::Char('n') => {
                             self.panes[self.active_pane].highlight_next("[[")?;
                             self.panes[self.active_pane].display()?;
