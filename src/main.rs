@@ -24,6 +24,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::{stdout, Stdout, Write};
 use std::path::PathBuf;
+use terki::{Ex, ExEventStatus};
 use textwrap;
 use tokio;
 use url::Url;
@@ -395,92 +396,6 @@ enum Location {
     End,
 }
 
-#[derive(PartialEq)]
-enum ExEventStatus {
-    Consumed,
-    Run(String),
-    None,
-}
-
-struct Ex {
-    active: bool,
-    buffer: String,
-    cursor_pos: u16,
-}
-
-impl Ex {
-    fn new() -> Ex {
-        Ex {
-            active: false,
-            buffer: "".to_string(),
-            cursor_pos: 0,
-        }
-    }
-
-    fn display(&mut self, row: u16) -> Result<(), Error> {
-        let mut stdout = stdout();
-        stdout
-            .queue(cursor::MoveTo(0, row))?
-            .queue(Clear(ClearType::CurrentLine))?;
-        if self.active {
-            write!(stdout, ":{}", self.buffer)?;
-            stdout.queue(cursor::MoveTo(self.cursor_pos + 1, row))?;
-        }
-        stdout.flush()?;
-        Ok(())
-    }
-
-    fn handle_key_press(&mut self, event: KeyEvent) -> ExEventStatus {
-        if !self.active {
-            if event.code == KeyCode::Char(':') {
-                self.active = true;
-                return ExEventStatus::Consumed;
-            }
-            return ExEventStatus::None;
-        }
-        match event.code {
-            KeyCode::Esc => {
-                self.active = false;
-            }
-            KeyCode::Enter => {
-                self.active = false;
-                let command = std::mem::replace(&mut self.buffer, "".to_string());
-                self.cursor_pos = 0;
-                return ExEventStatus::Run(command);
-            }
-            KeyCode::Home => {
-                self.cursor_pos = 0;
-            }
-            KeyCode::End => {
-                self.cursor_pos = max(self.buffer.len() as i16 - 1, 0) as u16;
-            }
-            KeyCode::Left => {
-                self.cursor_pos = max(self.cursor_pos as i16 - 1, 0) as u16;
-            }
-            KeyCode::Right => {
-                self.cursor_pos = min(self.cursor_pos + 1, self.buffer.len() as u16);
-            }
-            KeyCode::Backspace => {
-                if self.buffer.len() > 0 {
-                    let new_cursor_pos = max(self.cursor_pos as i16 - 1, 0) as u16;
-                    let before = &self.buffer[0..new_cursor_pos as usize];
-                    let after = &self.buffer[self.cursor_pos as usize..self.buffer.len()];
-                    self.buffer = [before, after].concat();
-                    self.cursor_pos = new_cursor_pos;
-                } else {
-                    self.active = false;
-                }
-            }
-            KeyCode::Char(c) => {
-                self.buffer.insert(self.cursor_pos as usize, c);
-                self.cursor_pos += 1;
-            }
-            _ => return ExEventStatus::None,
-        }
-        return ExEventStatus::Consumed;
-    }
-}
-
 struct Terki {
     wikis: HashMap<String, Wiki>,
     panes: Vec<Pane>,
@@ -636,7 +551,7 @@ impl Terki {
                     _ => {}
                 },
                 Event::Key(event) => {
-                    if self.ex.active {
+                    if self.ex.active() {
                         handled = self.ex.handle_key_press(event);
                     }
                     if handled != ExEventStatus::None {
@@ -644,7 +559,7 @@ impl Terki {
                             self.run_command(&command).await?;
                         }
                         self.ex.display(self.size.1 as u16 - 1)?;
-                        if !self.ex.active {
+                        if !self.ex.active() {
                             self.panes[self.active_pane].display()?;
                         }
                         continue;
@@ -675,10 +590,8 @@ impl Terki {
                             continue;
                         }
                         KeyCode::Char('o') => {
-                            self.ex.active = true;
-                            self.ex.buffer = "open ".to_string();
-                            self.ex.cursor_pos = "open ".len() as u16;
-                            self.ex.display(self.size.1 as u16 - 1)?;
+                            self.ex
+                                .activate_with_prompt(self.size.1 as u16 - 1, "open".to_string())?;
                             continue;
                         }
                         KeyCode::Char('x') => {
