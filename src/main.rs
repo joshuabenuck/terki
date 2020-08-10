@@ -181,6 +181,7 @@ struct Highlight {
 }
 
 struct Pane {
+    store: String,
     wiki: String,
     slug: String,
     lines: Vec<String>,
@@ -191,8 +192,15 @@ struct Pane {
 }
 
 impl Pane {
-    fn new(wiki: String, slug: String, lines: Vec<String>, size: (usize, usize)) -> Pane {
+    fn new(
+        store: String,
+        wiki: String,
+        slug: String,
+        lines: Vec<String>,
+        size: (usize, usize),
+    ) -> Pane {
         Pane {
+            store,
             wiki,
             slug,
             lines: lines.clone(),
@@ -203,20 +211,35 @@ impl Pane {
         }
     }
 
-    fn status(&self, status: &str) -> Result<(), Error> {
+    fn single_line(&self, location: (u16, u16), text: &str) -> Result<(), Error> {
         let mut stdout = stdout();
         stdout
-            .queue(cursor::MoveTo(0, self.size.1 as u16))?
+            .queue(cursor::MoveTo(location.0, location.1))?
             .queue(Clear(ClearType::CurrentLine))?;
-        write!(stdout, "{}", status)?;
+        write!(stdout, "{}", text)?;
         stdout.flush()?;
         Ok(())
     }
 
+    fn header(&self) -> Result<(), Error> {
+        let header = format!("{}: {} -- {}", self.store, self.wiki, self.slug);
+        self.single_line(
+            (0, 0),
+            &style(format!("{: ^1$}", header, self.size.0 as usize))
+                .attribute(Attribute::Reverse)
+                .to_string(),
+        )
+    }
+
+    fn status(&self, status: &str) -> Result<(), Error> {
+        self.single_line((0, self.size.1 as u16), status)
+    }
+
     fn display(&mut self) -> Result<(), Error> {
+        self.header()?;
         let lines = &mut self.lines;
         let mut stdout = stdout();
-        stdout.queue(cursor::MoveTo(0, 0))?;
+        stdout.queue(cursor::MoveTo(0, 1))?;
         // Reuse for scroll to bottom?
         // let offset = if lines.len() >= self.size.1 as usize {
         //     lines.len() - self.size.1 as usize + 1
@@ -240,7 +263,8 @@ impl Pane {
             write!(stdout, "{}", line)?;
             count += 1;
             stdout.queue(cursor::MoveToNextLine(1))?;
-            if count >= self.size.1 - 1 {
+            // target is size minus header and status lines.
+            if count >= self.size.1 - 2 {
                 break;
             }
         }
@@ -326,16 +350,20 @@ impl Pane {
     }
 
     fn scroll_down(&mut self) -> Result<(), Error> {
-        if self.scroll_index + self.size.1 - 1 < self.lines.len() {
+        if self.scroll_index + self.size.1 - 2 < self.lines.len() {
             let mut stdout = stdout();
             stdout.queue(ScrollUp(1))?;
-            stdout.queue(cursor::MoveTo(0, (self.size.1 - 2) as u16))?;
+            self.header()?;
+            // zero indexed, account for header
+            stdout
+                .queue(cursor::MoveTo(0, (self.size.1 - 2) as u16))?
+                .queue(Clear(ClearType::CurrentLine))?;
             self.scroll_index += 1;
             write!(
                 stdout,
                 "{}",
-                // ignore status line
-                &self.lines[self.scroll_index + self.size.1 - 2],
+                // zero indexed, ignore header and status lines
+                &self.lines[self.scroll_index + self.size.1 - 3],
             )?;
             stdout.flush()?;
             self.status("")?;
@@ -347,7 +375,11 @@ impl Pane {
         if self.scroll_index > 0 {
             let mut stdout = stdout();
             stdout.queue(ScrollDown(1))?;
-            stdout.queue(cursor::MoveTo(0, 0))?;
+            self.header()?;
+            // header line
+            stdout
+                .queue(cursor::MoveTo(0, 1))?
+                .queue(Clear(ClearType::CurrentLine))?;
             self.scroll_index -= 1;
             write!(&mut stdout, "{}", &self.lines[self.scroll_index])?;
             stdout.flush()?;
@@ -507,13 +539,18 @@ impl Terki {
     }
 
     async fn display(&mut self, wiki: &str, slug: &str, location: Location) -> Result<(), Error> {
-        let page = self
+        let wiki_obj = self
             .wikis
             .get_mut(wiki)
-            .ok_or(anyhow!("wiki not found: {}", wiki))?
-            .page(slug)
-            .await?;
+            .ok_or(anyhow!("wiki not found: {}", wiki))?;
+        let store = match wiki_obj.store {
+            PageStore::Http { .. } => "remote",
+            PageStore::Local { .. } => "local",
+        }
+        .to_string();
+        let page = wiki_obj.page(slug).await?;
         let pane = Pane::new(
+            store,
             wiki.to_owned(),
             slug.to_owned(),
             page.lines(self.size.0),
@@ -589,7 +626,8 @@ impl Terki {
             match event {
                 Event::Mouse(event) => match event {
                     MouseEvent::Down(_button, x, y, _modifiers) => {
-                        let link = self.panes[self.active_pane].find_link(x, y);
+                        // adjust y to account for header
+                        let link = self.panes[self.active_pane].find_link(x, y - 1);
                         if let Some(link) = link {
                             let link = link.to_lowercase().replace(" ", "-");
                             self.run_command(&format!("open {}", link)).await?;
