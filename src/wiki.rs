@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Error, Result};
+use anyhow::{Error, Result};
 use reqwest;
 use serde::Deserialize;
 use serde_json::Value;

@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Error, Result};
+use anyhow::{Error, Result};
 use crossterm::{
     self, cursor,
     event::{KeyCode, KeyEvent},
@@ -6,7 +6,7 @@ use crossterm::{
     QueueableCommand,
 };
 use std::cmp::{max, min};
-use std::io::{stdout, Stdout, Write};
+use std::io::{stdout, Write};
 
 #[derive(PartialEq)]
 pub enum ExEventStatus {
