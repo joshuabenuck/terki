@@ -15,6 +15,8 @@ pub enum Location {
 pub struct Terki {
     wikis: HashMap<String, Wiki>,
     panes: Vec<Pane>,
+    pane_to_wiki: Vec<String>,
+    pane_to_slug: Vec<String>,
     active_pane: usize,
     size: (usize, usize),
     ex: Ex,
@@ -25,6 +27,8 @@ impl Terki {
         Terki {
             wikis: HashMap::new(),
             panes: Vec::new(),
+            pane_to_wiki: Vec::new(),
+            pane_to_slug: Vec::new(),
             active_pane: 0,
             size,
             ex: Ex::new(),
@@ -77,35 +81,32 @@ impl Terki {
             .wikis
             .get_mut(wiki)
             .ok_or(anyhow!("wiki not found: {}", wiki))?;
-        let store = match wiki_obj.store {
-            PageStore::Http { .. } => "remote",
-            PageStore::Local { .. } => "local",
-        }
-        .to_string();
         let page = wiki_obj.page(slug).await?;
-        let pane = Pane::new(
-            store,
-            wiki.to_owned(),
-            slug.to_owned(),
-            page.lines(self.size.0),
-            self.size,
-        );
+        let pane = Pane::new(page.lines(self.size.0), self.size);
+        // Ug... Might be better to just wrap everything in a WikiPane
         match (self.panes.len(), location) {
             (0, _) | (_, Location::End) => {
                 self.panes.push(pane);
+                self.pane_to_wiki.push(wiki.to_owned());
+                self.pane_to_slug.push(slug.to_owned());
                 self.active_pane = self.panes.len() - 1;
             }
             (_, Location::Replace) => {
                 self.panes.remove(self.active_pane);
+                self.pane_to_wiki.remove(self.active_pane);
+                self.pane_to_slug.remove(self.active_pane);
                 self.panes.insert(self.active_pane, pane);
+                self.pane_to_wiki.insert(self.active_pane, wiki.to_owned());
+                self.pane_to_slug.insert(self.active_pane, slug.to_owned());
             }
             (_, Location::Next) => {
-                self.panes.insert(self.active_pane + 1, pane);
                 self.active_pane += 1;
+                self.panes.insert(self.active_pane, pane);
+                self.pane_to_wiki.insert(self.active_pane, wiki.to_owned());
+                self.pane_to_slug.insert(self.active_pane, slug.to_owned());
             }
         };
-        self.panes[self.active_pane].display()?;
-        Ok(())
+        self.display_active_pane()
     }
 
     fn scroll_down(&mut self) -> Result<(), Error> {
@@ -133,7 +134,7 @@ impl Terki {
                 }
                 let args: &[String] = &parts[1..parts.len()];
                 if args.len() == 1 {
-                    let wiki = self.panes[self.active_pane].wiki.clone();
+                    let wiki = self.pane_to_wiki[self.active_pane].clone();
                     self.display(&wiki, &args[0], Location::Next).await?;
                 }
             }
@@ -153,11 +154,20 @@ impl Terki {
         Ok(())
     }
 
+    fn display_active_pane(&mut self) -> Result<(), Error> {
+        let mut pane = &mut self.panes[self.active_pane];
+        let wiki = &self.pane_to_wiki[self.active_pane];
+        let store = &self.wikis.get(wiki).unwrap().store.to_string();
+        let slug = &self.pane_to_slug[self.active_pane];
+        pane.header = format!("{}: {} -- {}", store, wiki, slug);
+        pane.display()
+    }
+
     fn previous_pane(&mut self) -> Result<(), Error> {
         let previous_pane = self.active_pane;
         self.active_pane = max(self.active_pane as isize - 1, 0) as usize;
         if self.active_pane != previous_pane {
-            self.panes[self.active_pane].display()?;
+            self.display_active_pane()?;
         }
         Ok(())
     }
@@ -166,7 +176,7 @@ impl Terki {
         let previous_pane = self.active_pane;
         self.active_pane = min(self.active_pane + 1, self.panes.len() - 1);
         if self.active_pane != previous_pane {
-            self.panes[self.active_pane].display()?;
+            self.display_active_pane()?;
         }
         Ok(())
     }

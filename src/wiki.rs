@@ -36,6 +36,14 @@ impl PageStore {
         };
         Ok(page)
     }
+
+    pub fn to_string(&self) -> String {
+        match *self {
+            PageStore::Http { .. } => "remote",
+            PageStore::Local { .. } => "local",
+        }
+        .to_string()
+    }
 }
 #[derive(Debug)]
 pub struct Wiki {

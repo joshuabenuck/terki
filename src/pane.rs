@@ -14,9 +14,7 @@ struct Highlight {
 }
 
 pub struct Pane {
-    pub store: String,
-    pub wiki: String,
-    pub slug: String,
+    pub header: String,
     lines: Vec<String>,
     highlighted_lines: Vec<String>,
     current_highlight: Option<Highlight>,
@@ -25,17 +23,9 @@ pub struct Pane {
 }
 
 impl Pane {
-    pub fn new(
-        store: String,
-        wiki: String,
-        slug: String,
-        lines: Vec<String>,
-        size: (usize, usize),
-    ) -> Pane {
+    pub fn new(lines: Vec<String>, size: (usize, usize)) -> Pane {
         Pane {
-            store,
-            wiki,
-            slug,
+            header: "".to_string(),
             lines: lines.clone(),
             highlighted_lines: lines,
             current_highlight: None,
@@ -55,10 +45,9 @@ impl Pane {
     }
 
     pub fn header(&self) -> Result<(), Error> {
-        let header = format!("{}: {} -- {}", self.store, self.wiki, self.slug);
         self.single_line(
             (0, 0),
-            &style(format!("{: ^1$}", header, self.size.0 as usize))
+            &style(format!("{: ^1$}", self.header, self.size.0 as usize))
                 .attribute(Attribute::Reverse)
                 .to_string(),
         )
