@@ -2,7 +2,7 @@ use crate::{Ex, ExEventStatus, PageStore, Pane, Wiki};
 use anyhow::{anyhow, Error, Result};
 use crossterm::{
     self,
-    event::{read, Event, KeyCode, MouseEvent},
+    event::{read, Event, KeyCode, KeyModifiers, MouseEvent},
     ExecutableCommand,
 };
 use std::cmp::{max, min};
@@ -172,7 +172,11 @@ impl Terki {
                     self.panes.truncate(next_pane);
 
                     self.display(&wiki, &args[0], Location::Next).await?;
+                } else if args.len() == 2 && args[0] == "end" {
+                    let wiki = self.pane_to_wiki[self.active_pane].clone();
+                    self.display(&wiki, &args[1], Location::End).await?;
                 }
+                self.ex.result = format!("{:?} {} {}", args, args.len(), args[0] == "end");
             }
             "close" => {
                 if self.panes.len() > 1 {
@@ -188,7 +192,7 @@ impl Terki {
             }
         }
         self.ex.display(self.size.1 as u16 - 1)?;
-        self.panes[self.active_pane].display()?;
+        self.display_active_pane()?;
         Ok(())
     }
 
@@ -243,12 +247,16 @@ impl Terki {
             let mut handled = ExEventStatus::None;
             match event {
                 Event::Mouse(event) => match event {
-                    MouseEvent::Down(_button, x, y, _modifiers) => {
+                    MouseEvent::Down(_button, x, y, modifiers) => {
                         // adjust y to account for header
                         let link = self.panes[self.active_pane].find_link(x, y - 1);
                         if let Some(link) = link {
                             let link = link.to_lowercase().replace(" ", "-");
-                            self.run_command(&format!("open {}", link)).await?;
+                            if modifiers == KeyModifiers::SHIFT {
+                                self.run_command(&format!("open end {}", link)).await?;
+                            } else {
+                                self.run_command(&format!("open {}", link)).await?;
+                            }
                         }
                     }
                     _ => {}
