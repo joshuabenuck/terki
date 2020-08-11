@@ -5,7 +5,7 @@ use crossterm::{
     terminal::{Clear, ClearType, ScrollDown, ScrollUp},
     QueueableCommand,
 };
-use std::io::{stdout, Write};
+use std::io::{stdout, Stdout, Write};
 
 struct Highlight {
     line: usize,
@@ -34,18 +34,22 @@ impl Pane {
         }
     }
 
-    fn single_line(&self, location: (u16, u16), text: &str) -> Result<(), Error> {
-        let mut stdout = stdout();
+    fn single_line(
+        &self,
+        stdout: &mut Stdout,
+        location: (u16, u16),
+        text: &str,
+    ) -> Result<(), Error> {
         stdout
             .queue(cursor::MoveTo(location.0, location.1))?
             .queue(Clear(ClearType::CurrentLine))?;
         write!(stdout, "{}", text)?;
-        stdout.flush()?;
         Ok(())
     }
 
-    pub fn header(&self) -> Result<(), Error> {
+    fn queue_header(&self, stdout: &mut Stdout) -> Result<(), Error> {
         self.single_line(
+            stdout,
             (0, 0),
             &style(format!("{: ^1$}", self.header, self.size.0 as usize))
                 .attribute(Attribute::Reverse)
@@ -53,8 +57,18 @@ impl Pane {
         )
     }
 
+    pub fn header(&self) -> Result<(), Error> {
+        let mut stdout = stdout();
+        self.queue_header(&mut stdout)?;
+        stdout.flush()?;
+        Ok(())
+    }
+
     pub fn status(&self, status: &str) -> Result<(), Error> {
-        self.single_line((0, self.size.1 as u16), status)
+        let mut stdout = stdout();
+        self.single_line(&mut stdout, (0, self.size.1 as u16), status)?;
+        stdout.flush()?;
+        Ok(())
     }
 
     pub fn display(&mut self) -> Result<(), Error> {
@@ -181,7 +195,7 @@ impl Pane {
         if self.scroll_index + self.size.1 - 2 < self.lines.len() {
             let mut stdout = stdout();
             stdout.queue(ScrollUp(1))?;
-            self.header()?;
+            self.queue_header(&mut stdout)?;
             // zero indexed, account for header
             stdout
                 .queue(cursor::MoveTo(0, (self.size.1 - 2) as u16))?
@@ -203,7 +217,7 @@ impl Pane {
         if self.scroll_index > 0 {
             let mut stdout = stdout();
             stdout.queue(ScrollDown(1))?;
-            self.header()?;
+            self.queue_header(&mut stdout)?;
             // header line
             stdout
                 .queue(cursor::MoveTo(0, 1))?
