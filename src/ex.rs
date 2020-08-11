@@ -18,6 +18,7 @@ pub enum ExEventStatus {
 pub struct Ex {
     active: bool,
     buffer: String,
+    pub result: String,
     cursor_pos: u16,
 }
 
@@ -26,6 +27,7 @@ impl Ex {
         Ex {
             active: false,
             buffer: "".to_string(),
+            result: "".to_string(),
             cursor_pos: 0,
         }
     }
@@ -49,6 +51,10 @@ impl Ex {
         if self.active {
             write!(stdout, ":{}", self.buffer)?;
             stdout.queue(cursor::MoveTo(self.cursor_pos + 1, row))?;
+        } else {
+            write!(stdout, "{}", self.result)?;
+            stdout.queue(cursor::MoveTo(self.result.len() as u16 + 1, row))?;
+            self.result = "".to_string();
         }
         stdout.flush()?;
         Ok(())

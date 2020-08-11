@@ -127,6 +127,9 @@ impl Terki {
         }
         let command = &parts[0];
         match command.as_str() {
+            "reload" => {
+                self.ex.result = self.reload_active_pane().await?;
+            }
             "open" => {
                 if parts.len() < 2 {
                     // err, not enough args
@@ -158,7 +161,24 @@ impl Terki {
                 return Ok(());
             }
         }
+        self.ex.display(self.size.1 as u16 - 1)?;
+        self.panes[self.active_pane].display()?;
         Ok(())
+    }
+
+    async fn reload_active_pane(&mut self) -> Result<String, Error> {
+        // the clones are yet more reason to merge the vecs into a single datastructure
+        let wiki = self.pane_to_wiki[self.active_pane].clone();
+        let store = &mut self.wikis.get_mut(&wiki).unwrap().store;
+        let slug = self.pane_to_slug[self.active_pane].clone();
+        match store {
+            PageStore::Http { cache, .. } => {
+                cache.remove(&slug);
+                self.display(&wiki, &slug, Location::Replace).await?;
+                Ok("Reloaded!".to_string())
+            }
+            _ => Ok("Error: Unable to reload local pages!".to_string()),
+        }
     }
 
     fn display_active_pane(&mut self) -> Result<(), Error> {
@@ -214,10 +234,8 @@ impl Terki {
                     if handled != ExEventStatus::None {
                         if let ExEventStatus::Run(command) = handled {
                             self.run_command(&command).await?;
-                        }
-                        self.ex.display(self.size.1 as u16 - 1)?;
-                        if !self.ex.active() {
-                            self.panes[self.active_pane].display()?;
+                        } else {
+                            self.ex.display(self.size.1 as u16 - 1)?;
                         }
                         continue;
                     }
@@ -243,9 +261,12 @@ impl Terki {
                                 .activate_with_prompt(self.size.1 as u16 - 1, "open".to_string())?;
                             continue;
                         }
+                        KeyCode::Char('r') => {
+                            self.run_command("reload").await?;
+                            continue;
+                        }
                         KeyCode::Char('x') => {
                             self.run_command("close").await?;
-                            self.panes[self.active_pane].display()?;
                             continue;
                         }
                         KeyCode::Char('e') => {

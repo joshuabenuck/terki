@@ -90,7 +90,7 @@ impl Pane {
                 break;
             }
         }
-        for _ in count..self.size.1 - 1 {
+        for _ in count..self.size.1 - 2 {
             stdout.queue(Clear(ClearType::CurrentLine))?;
             stdout.queue(cursor::MoveToNextLine(1))?;
         }
