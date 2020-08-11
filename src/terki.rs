@@ -135,6 +135,13 @@ impl Terki {
                 let args: &[String] = &parts[1..parts.len()];
                 if args.len() == 1 {
                     let wiki = self.pane_to_wiki[self.active_pane].clone();
+
+                    // Close pages off to the right
+                    let next_pane = self.active_pane + 1;
+                    self.pane_to_wiki.truncate(next_pane);
+                    self.pane_to_slug.truncate(next_pane);
+                    self.panes.truncate(next_pane);
+
                     self.display(&wiki, &args[0], Location::Next).await?;
                 }
             }
@@ -162,7 +169,7 @@ impl Terki {
         let slug = &self.pane_to_slug[self.active_pane];
         lineup[self.active_pane] = "*";
         let lineup: String = lineup.join("|");
-        pane.header = format!("{}: {} -- {} |{}|", store, wiki, slug, lineup);
+        pane.header = format!("\\|v|/ {}: {} -- {} |{}|", store, wiki, slug, lineup);
         pane.display()
     }
 
