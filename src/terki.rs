@@ -155,11 +155,14 @@ impl Terki {
     }
 
     fn display_active_pane(&mut self) -> Result<(), Error> {
+        let mut lineup: Vec<&str> = (0..self.panes.len()).map(|_| "-").collect();
         let mut pane = &mut self.panes[self.active_pane];
         let wiki = &self.pane_to_wiki[self.active_pane];
         let store = &self.wikis.get(wiki).unwrap().store.to_string();
         let slug = &self.pane_to_slug[self.active_pane];
-        pane.header = format!("{}: {} -- {}", store, wiki, slug);
+        lineup[self.active_pane] = "*";
+        let lineup: String = lineup.join("|");
+        pane.header = format!("{}: {} -- {} |{}|", store, wiki, slug, lineup);
         pane.display()
     }
 

@@ -99,7 +99,13 @@ impl Pane {
     }
 
     pub fn find_link(&self, x: u16, y: u16) -> Option<String> {
+        if y as usize >= self.lines.len() {
+            return None;
+        }
         let line = &self.lines[y as usize];
+        if x as usize >= line.len() {
+            return None;
+        }
         let start = line[0..x as usize].rfind("[[");
         let end = start.and_then(|start| line[start..line.len()].find("]]"));
         match (start, end) {
