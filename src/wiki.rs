@@ -15,6 +15,8 @@ pub enum PageStore {
     Http {
         url: String,
         cache: HashMap<String, String>,
+        password: Option<String>,
+        session: Option<String>,
     },
 }
 
@@ -24,7 +26,7 @@ impl PageStore {
             PageStore::Local { path } => {
                 serde_json::from_str(&fs::read_to_string(path.join("pages").join(slug))?)?
             }
-            PageStore::Http { url, cache } => {
+            PageStore::Http { url, cache, .. } => {
                 if !cache.contains_key(slug) {
                     let url = Url::parse(url)?;
                     let page_url = url.join(&format!("{}.json", slug))?;
@@ -65,6 +67,36 @@ impl Wiki {
             self.pages.insert(slug.to_owned(), retrieved);
         }
         Ok(self.pages.get_mut(slug).unwrap())
+    }
+
+    pub async fn login(&mut self) -> Result<(), Error> {
+        match &self.store {
+            PageStore::Http { url, password, .. } => {
+                let password = password
+                    .as_ref()
+                    .ok_or(anyhow::anyhow!("No password set!"))?;
+                let client = reqwest::Client::new();
+                let response = client
+                    .post(Url::parse(&format!("{}/auth/reclaim", url))?)
+                    .body(password.to_owned())
+                    .send()
+                    .await?;
+                if !response.status().is_success() {
+                    return Err(anyhow::anyhow!(
+                        "Unable to login: {}",
+                        response.status().as_str()
+                    ));
+                }
+            }
+            PageStore::Local { .. } => {
+                return Err(anyhow::anyhow!("Login not needed for a local site!"));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn password_mut(&mut self) -> Option<&mut String> {
+        None
     }
 }
 

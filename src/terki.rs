@@ -45,6 +45,11 @@ impl Terki {
         self.wikis.get(wiki).unwrap()
     }
 
+    fn wiki_mut(&mut self) -> &mut Wiki {
+        let wiki = &self.pane_to_wiki[self.active_pane];
+        self.wikis.get_mut(wiki).unwrap()
+    }
+
     pub fn add_local<'a>(&'a mut self, path: PathBuf) -> Option<&'a mut Wiki> {
         if !path.exists() {
             return None;
@@ -76,6 +81,8 @@ impl Terki {
             Wiki::new(PageStore::Http {
                 url: url.to_owned(),
                 cache: HashMap::new(),
+                password: None,
+                session: None,
             }),
         );
         Ok(host.to_owned())
@@ -137,6 +144,25 @@ impl Terki {
         }
         let command = &parts[0];
         match command.as_str() {
+            "password" => {
+                if parts.len() < 2 {
+                    // err, not enough args
+                    return Ok(());
+                }
+                let args: &[String] = &parts[1..parts.len()];
+                if args.len() != 1 {
+                    self.ex.result = "Wrong number of args!".to_string();
+                } else {
+                    let wiki = self.wiki_mut();
+                    let password = wiki.password_mut().expect("Not a remote site!");
+                    *password = args[0].clone();
+                    self.ex.result = "Login succeeded!".to_string();
+                }
+            }
+            "login" => {
+                self.wiki_mut().login().await?;
+                self.ex.result = "Login succeeded!".to_string();
+            }
             "web" => match &self.wiki().store {
                 PageStore::Http { url, .. } => {
                     let slug = &self.pane_to_slug[self.active_pane];
