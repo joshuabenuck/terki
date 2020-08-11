@@ -4,7 +4,10 @@ use crossterm::{
     self,
     event::{DisableMouseCapture, EnableMouseCapture},
     execute,
-    terminal::{size, EnterAlternateScreen, LeaveAlternateScreen, SetSize},
+    terminal::{
+        disable_raw_mode, enable_raw_mode, size, EnterAlternateScreen, LeaveAlternateScreen,
+        SetSize,
+    },
 };
 use dirs;
 use std::io::{stdout, Write};
@@ -51,7 +54,7 @@ async fn main() -> Result<(), Error> {
         std::process::exit(1);
     };
 
-    // let wiki = terki.wikis.get_mut("localhost");
+    enable_raw_mode()?;
     let mut stdout = stdout();
     println!("{}, {}", size.0, size.1);
     execute!(
@@ -62,5 +65,6 @@ async fn main() -> Result<(), Error> {
     )?;
     let result = run(terki, &wiki).await;
     execute!(stdout, LeaveAlternateScreen, DisableMouseCapture)?;
+    disable_raw_mode()?;
     result
 }
