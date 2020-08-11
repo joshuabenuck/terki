@@ -240,52 +240,28 @@ impl Terki {
                         continue;
                     }
                     match event.code {
-                        KeyCode::Up => {
-                            self.scroll_up()?;
-                            continue;
-                        }
-                        KeyCode::Down => {
-                            self.scroll_down()?;
-                            continue;
-                        }
-                        KeyCode::Left => {
-                            self.previous_pane()?;
-                            continue;
-                        }
-                        KeyCode::Right => {
-                            self.next_pane()?;
-                            continue;
-                        }
+                        KeyCode::Up => self.scroll_up()?,
+                        KeyCode::Down => self.scroll_down()?,
+                        KeyCode::Left => self.previous_pane()?,
+                        KeyCode::Right => self.next_pane()?,
                         KeyCode::Char('o') => {
                             self.ex
                                 .activate_with_prompt(self.size.1 as u16 - 1, "open".to_string())?;
-                            continue;
                         }
-                        KeyCode::Char('r') => {
-                            self.run_command("reload").await?;
-                            continue;
-                        }
-                        KeyCode::Char('x') => {
-                            self.run_command("close").await?;
-                            continue;
-                        }
-                        KeyCode::Char('e') => {
-                            continue;
-                        }
+                        KeyCode::Char('r') => self.run_command("reload").await?,
+                        KeyCode::Char('x') => self.run_command("close").await?,
+                        KeyCode::Char('e') => {}
                         KeyCode::Char('n') => {
                             self.panes[self.active_pane].highlight_next("[[")?;
                             self.panes[self.active_pane].display()?;
-                            continue;
                         }
                         KeyCode::Char(':') => {
                             self.ex.handle_key_press(event);
                             self.ex.display(self.size.1 as u16 - 1)?;
-                            continue;
                         }
-                        _ => {}
+                        _ => break,
                     }
-                    println!("{:?}", event);
-                    break;
+                    continue;
                 }
                 _ => {}
             }
