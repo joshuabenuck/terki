@@ -1,8 +1,13 @@
 use crate::{Ex, ExEventStatus, PageStore, Pane, Wiki};
 use anyhow::{anyhow, Error, Result};
-use crossterm::event::{read, Event, KeyCode, MouseEvent};
+use crossterm::{
+    self,
+    event::{read, Event, KeyCode, MouseEvent},
+    ExecutableCommand,
+};
 use std::cmp::{max, min};
 use std::collections::HashMap;
+use std::io::stdout;
 use std::path::PathBuf;
 use url::Url;
 
@@ -33,6 +38,11 @@ impl Terki {
             size,
             ex: Ex::new(),
         }
+    }
+
+    fn wiki(&self) -> &Wiki {
+        let wiki = &self.pane_to_wiki[self.active_pane];
+        self.wikis.get(wiki).unwrap()
     }
 
     pub fn add_local<'a>(&'a mut self, path: PathBuf) -> Option<&'a mut Wiki> {
@@ -127,6 +137,22 @@ impl Terki {
         }
         let command = &parts[0];
         match command.as_str() {
+            "web" => match &self.wiki().store {
+                PageStore::Http { url, .. } => {
+                    let slug = &self.pane_to_slug[self.active_pane];
+                    let mut command = std::process::Command::new("cmd");
+                    command.args(&["/c", "start", &format!("{}/view/{}", url, slug)]);
+                    let mut process = command.spawn()?;
+                    let result = process.wait()?;
+                    if result.success() {
+                        self.ex.result = "Opening page in web browser...".to_string();
+                    }
+                    // mouse capture gets disabled after running an external command
+                    // not sure why... the workaround is to re-enable it
+                    stdout().execute(crossterm::event::EnableMouseCapture)?;
+                }
+                _ => self.ex.result = "URLs are not known for local wikis!".to_string(),
+            },
             "reload" => {
                 self.ex.result = self.reload_active_pane().await?;
             }
