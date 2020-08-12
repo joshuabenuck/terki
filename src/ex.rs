@@ -20,7 +20,7 @@ pub struct Ex {
     buffer: String,
     pub result: String,
     cursor_pos: u16,
-    history: Vec<String>,
+    pub history: Vec<String>,
     hindex: Option<usize>,
 }
 

@@ -5,11 +5,33 @@ use crossterm::{
     event::{read, Event, KeyCode, KeyModifiers, MouseEvent},
     ExecutableCommand,
 };
+use serde::{Deserialize, Serialize};
 use std::cmp::{max, min};
 use std::collections::HashMap;
 use std::io::stdout;
 use std::path::PathBuf;
 use url::Url;
+
+#[derive(Serialize, Deserialize)]
+struct CacheWiki {
+    name: String,
+    url: String,
+    password: Option<String>,
+    session: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct CachePage {
+    wiki: String,
+    slug: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct Cache {
+    history: Vec<String>,
+    wikis: Vec<CacheWiki>,
+    lineups: Vec<Vec<CachePage>>,
+}
 
 pub enum Location {
     Replace,
@@ -18,7 +40,7 @@ pub enum Location {
 }
 
 pub struct Terki {
-    wikis: HashMap<String, Wiki>,
+    pub wikis: HashMap<String, Wiki>,
     panes: Vec<Pane>,
     pane_to_wiki: Vec<String>,
     pane_to_slug: Vec<String>,
@@ -38,6 +60,87 @@ impl Terki {
             size,
             ex: Ex::new(),
         }
+    }
+
+    fn cache_path(&self) -> Result<PathBuf, Error> {
+        Ok(dirs::home_dir()
+            .ok_or(anyhow::anyhow!("Unable to find home directory!"))?
+            .join(".terki")
+            .join("cache.json"))
+    }
+
+    pub async fn load(&mut self) -> Result<(), Error> {
+        let file = self.cache_path()?;
+        if !file.exists() {
+            return Ok(());
+        }
+        let contents = std::fs::read_to_string(file)?;
+        let cache: Cache = serde_json::from_str(&contents)?;
+        for wiki in cache.wikis {
+            self.wikis.insert(
+                wiki.name,
+                Wiki::new(PageStore::Http {
+                    url: wiki.url.to_owned(),
+                    cache: HashMap::new(),
+                    password: wiki.password,
+                    session: wiki.session,
+                }),
+            );
+            for lineup in &cache.lineups {
+                for page in lineup {
+                    self.open(&page.wiki, &page.slug, Location::End).await?;
+                }
+                self.active_pane = 0;
+            }
+        }
+        self.ex.history = cache.history;
+        Ok(())
+    }
+
+    pub fn save(&self) -> Result<(), Error> {
+        let file = self.cache_path()?;
+        let parent = file
+            .parent()
+            .expect("Unable to find parent dir of terki cache.");
+        if !parent.exists() {
+            println!("Creating: {}", parent.display());
+            std::fs::create_dir(parent)?;
+        }
+        let mut wikis = Vec::new();
+        for (name, wiki) in self.wikis.iter() {
+            if let PageStore::Http {
+                url,
+                password,
+                session,
+                ..
+            } = &wiki.store
+            {
+                wikis.push(CacheWiki {
+                    name: name.to_owned(),
+                    url: url.to_owned(),
+                    password: password.to_owned(),
+                    session: session.to_owned(),
+                })
+            }
+        }
+        let mut lineups = Vec::new();
+        // will expand once multiple lineups are supported...
+        let mut lineup = Vec::new();
+        for (i, _pane) in self.panes.iter().enumerate() {
+            lineup.push(CachePage {
+                wiki: self.pane_to_wiki[i].to_owned(),
+                slug: self.pane_to_slug[i].to_owned(),
+            });
+        }
+        lineups.push(lineup);
+        let cache = Cache {
+            wikis,
+            lineups,
+            history: self.ex.history.to_owned(),
+        };
+        let cache_file = std::fs::File::create(file)?;
+        serde_json::to_writer_pretty(cache_file, &cache)?;
+        Ok(())
     }
 
     fn wiki(&self) -> &Wiki {
@@ -88,12 +191,7 @@ impl Terki {
         Ok(host.to_owned())
     }
 
-    pub async fn display(
-        &mut self,
-        wiki: &str,
-        slug: &str,
-        location: Location,
-    ) -> Result<(), Error> {
+    async fn open(&mut self, wiki: &str, slug: &str, location: Location) -> Result<(), Error> {
         let wiki_obj = self
             .wikis
             .get_mut(wiki)
@@ -123,6 +221,16 @@ impl Terki {
                 self.pane_to_slug.insert(self.active_pane, slug.to_owned());
             }
         };
+        Ok(())
+    }
+
+    pub async fn display(
+        &mut self,
+        wiki: &str,
+        slug: &str,
+        location: Location,
+    ) -> Result<(), Error> {
+        self.open(wiki, slug, location).await?;
         self.display_active_pane()
     }
 
@@ -201,7 +309,6 @@ impl Terki {
                     let wiki = self.pane_to_wiki[self.active_pane].clone();
                     self.display(&wiki, &args[1], Location::End).await?;
                 }
-                self.ex.result = format!("{:?} {} {}", args, args.len(), args[0] == "end");
             }
             "close" => {
                 if self.panes.len() > 1 {
@@ -236,7 +343,7 @@ impl Terki {
         }
     }
 
-    fn display_active_pane(&mut self) -> Result<(), Error> {
+    pub fn display_active_pane(&mut self) -> Result<(), Error> {
         let mut lineup: Vec<&str> = (0..self.panes.len()).map(|_| "-").collect();
         let mut pane = &mut self.panes[self.active_pane];
         let wiki = &self.pane_to_wiki[self.active_pane];
