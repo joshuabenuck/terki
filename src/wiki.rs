@@ -95,8 +95,12 @@ impl Wiki {
         Ok(())
     }
 
-    pub fn password_mut(&mut self) -> Option<&mut String> {
-        None
+    pub fn password(&mut self, new_password: String) -> Result<(), Error> {
+        if let PageStore::Http { password, .. } = &mut self.store {
+            std::mem::replace(password, Some(new_password));
+            return Ok(());
+        }
+        Err(anyhow::anyhow!("Not a remote site!"))
     }
 }
 

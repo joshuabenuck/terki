@@ -154,9 +154,8 @@ impl Terki {
                     self.ex.result = "Wrong number of args!".to_string();
                 } else {
                     let wiki = self.wiki_mut();
-                    let password = wiki.password_mut().expect("Not a remote site!");
-                    *password = args[0].clone();
-                    self.ex.result = "Login succeeded!".to_string();
+                    wiki.password(args[0].clone())?;
+                    self.ex.result = "Password set!".to_string();
                 }
             }
             "login" => {
