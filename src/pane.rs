@@ -113,10 +113,10 @@ impl Pane {
     }
 
     pub fn find_link(&self, x: u16, y: u16) -> Option<String> {
-        if y as usize >= self.lines.len() {
+        if y as usize >= self.lines.len() - self.scroll_index {
             return None;
         }
-        let line = &self.lines[y as usize];
+        let line = &self.lines[self.scroll_index + y as usize];
         if x as usize >= line.len() {
             return None;
         }

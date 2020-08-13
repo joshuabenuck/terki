@@ -146,7 +146,7 @@ enum JournalEntry {
 pub struct Page {
     title: String,
     story: Vec<Item>,
-    journal: Value,
+    journal: Option<Value>,
     #[serde(skip)]
     links: Vec<(String, String)>,
     #[serde(skip)]
