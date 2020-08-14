@@ -26,11 +26,25 @@ impl PageStore {
             PageStore::Local { path } => {
                 serde_json::from_str(&fs::read_to_string(path.join("pages").join(slug))?)?
             }
-            PageStore::Http { url, cache, .. } => {
+            PageStore::Http {
+                url,
+                cache,
+                session,
+                ..
+            } => {
                 if !cache.contains_key(slug) {
+                    use reqwest::header;
+                    let mut headers = header::HeaderMap::new();
+                    if let Some(session) = session {
+                        let value = format!("wikiTlsSession={}", session);
+                        headers.insert(header::COOKIE, header::HeaderValue::from_str(&value)?);
+                    }
                     let url = Url::parse(url)?;
                     let page_url = url.join(&format!("{}.json", slug))?;
-                    let body = reqwest::get(page_url).await?.text().await?;
+                    let client = reqwest::Client::builder()
+                        .default_headers(headers)
+                        .build()?;
+                    let body = client.get(page_url).send().await?.text().await?;
                     cache.insert(slug.to_owned(), body);
                 }
                 serde_json::from_str(cache.get(slug).as_ref().unwrap())?

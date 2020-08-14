@@ -86,12 +86,12 @@ impl Terki {
                     session: wiki.session,
                 }),
             );
-            for lineup in &cache.lineups {
-                for page in lineup {
-                    self.open(&page.wiki, &page.slug, Location::End).await?;
-                }
-                self.active_pane = 0;
+        }
+        for lineup in &cache.lineups {
+            for page in lineup {
+                self.open(&page.wiki, &page.slug, Location::End).await?;
             }
+            self.active_pane = 0;
         }
         self.ex.history = cache.history;
         Ok(())
