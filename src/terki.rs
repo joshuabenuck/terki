@@ -47,6 +47,8 @@ pub struct Terki {
     active_pane: usize,
     size: (usize, usize),
     ex: Ex,
+    edit_mode: bool,
+    active_line: usize,
 }
 
 impl Terki {
@@ -59,6 +61,8 @@ impl Terki {
             active_pane: 0,
             size,
             ex: Ex::new(),
+            edit_mode: false,
+            active_line: 0,
         }
     }
 
@@ -406,6 +410,25 @@ impl Terki {
                         continue;
                     }
                     match event.code {
+                        // keep vim binding separate
+                        // mode handling will complicate these later
+                        KeyCode::Char('k') => self.scroll_up()?,
+                        KeyCode::Char('j') => self.scroll_down()?,
+                        KeyCode::Char('h') => self.previous_pane()?,
+                        KeyCode::Char('l') => self.next_pane()?,
+                        KeyCode::Char('e') => {
+                            self.edit_mode = !self.edit_mode;
+                            if self.edit_mode {
+                                let active_pane = &mut self.panes[self.active_pane];
+                                active_pane.highlight_index = Some(active_pane.scroll_index);
+                                active_pane.highlight_line()?;
+                                active_pane.display()?;
+                            } else {
+                                let active_pane = &mut self.panes[self.active_pane];
+                                active_pane.reset_line(active_pane.highlight_index);
+                                active_pane.highlight_index = None;
+                            }
+                        }
                         KeyCode::Up => self.scroll_up()?,
                         KeyCode::Down => self.scroll_down()?,
                         KeyCode::Left => self.previous_pane()?,
@@ -416,9 +439,8 @@ impl Terki {
                         }
                         KeyCode::Char('r') => self.run_command("reload").await?,
                         KeyCode::Char('x') => self.run_command("close").await?,
-                        KeyCode::Char('e') => {}
                         KeyCode::Char('n') => {
-                            self.panes[self.active_pane].highlight_next("[[")?;
+                            self.panes[self.active_pane].search_next("[[")?;
                             self.panes[self.active_pane].display()?;
                         }
                         KeyCode::Char(':') => {

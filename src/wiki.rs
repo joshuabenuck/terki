@@ -156,6 +156,12 @@ enum JournalEntry {
     },
 }
 
+#[derive(Clone)]
+pub struct DisplayLine {
+    pub text: String,
+    pub line_index: Option<usize>,
+}
+
 #[derive(Deserialize, Debug)]
 pub struct Page {
     title: String,
@@ -169,17 +175,25 @@ pub struct Page {
 }
 
 impl Page {
-    fn render_item(&self, cols: usize, item: &Item) -> Vec<String> {
+    fn render_item(&self, cols: usize, line_index: &mut usize, item: &Item) -> Vec<DisplayLine> {
         let mut lines = Vec::new();
         let mut prefix = "";
         if item.r#type == "pagefold" {
             let heading = format!(" {} ", item.text.as_deref().unwrap_or(""));
-            lines.push(format!("{:-^1$}", heading, cols));
+            lines.push(DisplayLine {
+                text: format!("{:-^1$}", heading, cols),
+                line_index: Some(*line_index),
+            });
+            *line_index = *line_index + 1;
             return lines;
         }
         if item.r#type != "paragraph" {
             prefix = "  ";
-            lines.push(item.r#type.to_owned());
+            lines.push(DisplayLine {
+                text: item.r#type.to_owned(),
+                line_index: Some(*line_index),
+            });
+            *line_index = *line_index + 1;
         }
         let text = item.text.as_deref().unwrap_or("<empty>");
         if item.r#type == "paragraph" {
@@ -191,21 +205,29 @@ impl Page {
         }
         for line in text.split("\n") {
             for l in textwrap::wrap_iter(&line, cols - prefix.len()) {
-                lines.push(format!("{}{}", prefix, l.to_string()));
+                lines.push(DisplayLine {
+                    text: format!("{}{}", prefix, l.to_string()),
+                    line_index: Some(*line_index),
+                });
             }
+            *line_index = *line_index + 1;
         }
         return lines;
     }
 
-    pub fn lines(&mut self, cols: usize) -> Vec<String> {
+    pub fn lines(&mut self, cols: usize) -> Vec<DisplayLine> {
+        let mut line_index = 0;
         let mut lines = Vec::new();
         for (i, item) in self.story.iter().enumerate() {
-            for line in self.render_item(cols, item) {
+            for line in self.render_item(cols, &mut line_index, item) {
                 self.line_item.push(Some(i));
                 lines.push(line);
             }
             self.line_item.push(None);
-            lines.push("".to_string());
+            lines.push(DisplayLine {
+                text: "".to_string(),
+                line_index: None,
+            });
         }
         lines
     }

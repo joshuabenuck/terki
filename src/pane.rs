@@ -1,13 +1,14 @@
+use crate::DisplayLine;
 use anyhow::{Error, Result};
 use crossterm::{
     cursor,
-    style::{style, Attribute},
+    style::{style, Attribute, Color},
     terminal::{Clear, ClearType, ScrollDown, ScrollUp},
     QueueableCommand,
 };
 use std::io::{stdout, Stdout, Write};
 
-struct Highlight {
+struct Search {
     line: usize,
     index: usize,
     pattern: String,
@@ -15,21 +16,24 @@ struct Highlight {
 
 pub struct Pane {
     pub header: String,
-    lines: Vec<String>,
-    highlighted_lines: Vec<String>,
-    current_highlight: Option<Highlight>,
-    scroll_index: usize,
+    lines: Vec<DisplayLine>,
+    display_lines: Vec<DisplayLine>,
+    current_search: Option<Search>,
+    pub scroll_index: usize,
+    pub highlight_index: Option<usize>,
     size: (usize, usize),
 }
 
 impl Pane {
-    pub fn new(lines: Vec<String>, size: (usize, usize)) -> Pane {
+    // TODO: Remove dependency on wiki::DisplayLine
+    pub fn new(lines: Vec<DisplayLine>, size: (usize, usize)) -> Pane {
         Pane {
             header: "".to_string(),
             lines: lines.clone(),
-            highlighted_lines: lines,
-            current_highlight: None,
+            display_lines: lines,
+            current_search: None,
             scroll_index: 0,
+            highlight_index: None,
             size,
         }
     }
@@ -73,7 +77,7 @@ impl Pane {
 
     pub fn display(&mut self) -> Result<(), Error> {
         self.header()?;
-        let lines = &mut self.lines;
+        let lines = &mut self.display_lines;
         let mut stdout = stdout();
         stdout.queue(cursor::MoveTo(0, 1))?;
         // Reuse for scroll to bottom?
@@ -86,17 +90,17 @@ impl Pane {
         for (i, line) in lines.iter().enumerate().skip(self.scroll_index) {
             stdout.queue(Clear(ClearType::CurrentLine))?;
             let mut line = line.clone();
-            if let Some(highlight) = &self.current_highlight {
-                if highlight.line == i {
-                    line.replace_range(
-                        highlight.index..highlight.index + highlight.pattern.len(),
-                        &style(&highlight.pattern)
+            if let Some(search) = &self.current_search {
+                if search.line == i {
+                    line.text.replace_range(
+                        search.index..search.index + search.pattern.len(),
+                        &style(&search.pattern)
                             .attribute(Attribute::Bold)
                             .to_string(),
                     );
                 }
             }
-            write!(stdout, "{}", line)?;
+            write!(stdout, "{}", line.text)?;
             count += 1;
             stdout.queue(cursor::MoveToNextLine(1))?;
             // target is size minus header and status lines.
@@ -117,22 +121,22 @@ impl Pane {
             return None;
         }
         let line = &self.lines[self.scroll_index + y as usize];
-        if x as usize >= line.len() {
+        if x as usize >= line.text.len() {
             return None;
         }
-        let start = line[0..x as usize].rfind("[[");
-        let end = start.and_then(|start| line[start..line.len()].find("]]"));
+        let start = line.text[0..x as usize].rfind("[[");
+        let end = start.and_then(|start| line.text[start..line.text.len()].find("]]"));
         match (start, end) {
-            (Some(start), Some(end)) => Some(line[start + 2..end].to_string()),
+            (Some(start), Some(end)) => Some(line.text[start + 2..end].to_string()),
             _ => None,
         }
     }
 
-    fn find_highlight(&self, pattern: &str, offset: usize) -> Option<Highlight> {
+    fn find_search(&self, pattern: &str, offset: usize) -> Option<Search> {
         for (i, line) in self.lines.iter().enumerate().skip(offset) {
-            let index = line.find(&pattern);
+            let index = line.text.find(&pattern);
             if let Some(index) = index {
-                return Some(Highlight {
+                return Some(Search {
                     line: i,
                     index,
                     pattern: pattern.to_string(),
@@ -142,42 +146,100 @@ impl Pane {
         return None;
     }
 
+    pub fn reset_line(&mut self, highlight_index: Option<usize>) {
+        if let Some(highlight_index) = highlight_index {
+            let line = self.line_to_display(highlight_index);
+            if let Some(line) = line {
+                let target_index = self.lines[line].line_index.unwrap();
+                for i in line..self.lines.len() {
+                    let current_line = &self.lines[i];
+                    if let Some(index) = current_line.line_index {
+                        if index == target_index {
+                            self.display_lines[i] = self.lines[i].clone();
+                            continue;
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    pub fn highlight_line(&mut self) -> Result<(), Error> {
+        let line = match self.highlight_index {
+            None => self.scroll_index,
+            Some(line) => line,
+        };
+        let target_index = line;
+        let mut start_index = 0;
+        for i in 0..self.lines.len() {
+            if let Some(line_index) = self.lines[i].line_index {
+                if line_index == target_index {
+                    start_index = i;
+                    break;
+                }
+            }
+        }
+        let mut end_index = start_index;
+        for i in start_index..self.lines.len() {
+            if let Some(line_index) = self.lines[i].line_index {
+                if line_index == target_index {
+                    end_index = i;
+                    continue;
+                }
+            }
+            break;
+        }
+        for i in start_index..=end_index {
+            self.display_lines[i].text = style(&self.lines[i].text)
+                .with(Color::Yellow)
+                .attribute(Attribute::Bold)
+                .to_string();
+        }
+        self.status(&format!(
+            "start_index: {}; end_index: {}",
+            start_index, end_index
+        ))?;
+        Ok(())
+    }
+
     // fn highlight(&mut self, pattern: &str, dir: isize) -> Result<(), Error> {}
 
     // fn highlight_prev(&mut self, pattern: &str) -> Result<(), Error> {}
 
-    pub fn highlight_next(&mut self, pattern: &str) -> Result<(), Error> {
+    pub fn search_next(&mut self, pattern: &str) -> Result<(), Error> {
         // reset if new pattern isn't the same as the old one
-        match &self.current_highlight {
-            Some(highlight) if highlight.pattern != pattern => {
-                self.highlighted_lines[highlight.line] = self.lines[highlight.line].clone();
-                std::mem::replace(&mut self.current_highlight, None);
+        match &self.current_search {
+            Some(search) if search.pattern != pattern => {
+                self.display_lines[search.line] = self.lines[search.line].clone();
+                std::mem::replace(&mut self.current_search, None);
                 self.status("changed")?;
                 return Ok(());
             }
             _ => {}
         };
         // find the next match
-        self.current_highlight = match &self.current_highlight {
+        self.current_search = match &self.current_search {
             None => {
                 // if no match, find the first match
                 self.status("first")?;
-                self.find_highlight(pattern, self.scroll_index)
+                self.find_search(pattern, self.scroll_index)
             }
-            Some(highlight) => {
+            Some(search) => {
                 self.status("next")?;
-                let line = &self.lines[highlight.line];
-                let next_index = line[highlight.index + pattern.len()..line.len()].find(pattern);
+                let line = &self.lines[search.line];
+                let next_index =
+                    line.text[search.index + pattern.len()..line.text.len()].find(pattern);
                 match next_index {
                     // if there's another match on the current line, use it
-                    Some(index) => Some(Highlight {
+                    Some(index) => Some(Search {
                         // index is relative to the subset of the line scanned
-                        index: highlight.index + index,
-                        line: highlight.line,
-                        pattern: highlight.pattern.clone(),
+                        index: search.index + index,
+                        line: search.line,
+                        pattern: search.pattern.clone(),
                     }),
                     // otherwise, look on subsequent lines
-                    None => self.find_highlight(pattern, highlight.line + 1),
+                    None => self.find_search(pattern, search.line + 1),
                 }
             }
         };
@@ -191,24 +253,49 @@ impl Pane {
         Ok(())
     }
 
+    fn line_to_display(&self, target_index: usize) -> Option<usize> {
+        let mut display_index = 0;
+        for line in &self.display_lines {
+            if let Some(line_index) = line.line_index {
+                if line_index == target_index {
+                    return Some(display_index);
+                }
+            }
+            display_index += 1;
+        }
+        return None;
+    }
+
     pub fn scroll_down(&mut self) -> Result<(), Error> {
         if self.scroll_index + self.size.1 - 2 < self.lines.len() {
+            let mut scroll_by = 1;
+            if let Some(highlight_index) = self.highlight_index {
+                let before = self.line_to_display(highlight_index).unwrap();
+                if let Some(after) = self.line_to_display(highlight_index + 1) {
+                    scroll_by = after - before;
+                    self.reset_line(self.highlight_index);
+                    self.highlight_index = Some(highlight_index + 1);
+                    self.highlight_line()?;
+                    self.display()?;
+                }
+            };
             let mut stdout = stdout();
-            stdout.queue(ScrollUp(1))?;
+            stdout.queue(ScrollUp(scroll_by as u16))?;
             self.queue_header(&mut stdout)?;
             // zero indexed, account for header
-            stdout
-                .queue(cursor::MoveTo(0, (self.size.1 - 2) as u16))?
-                .queue(Clear(ClearType::CurrentLine))?;
-            self.scroll_index += 1;
-            write!(
-                stdout,
-                "{}",
-                // zero indexed, ignore header and status lines
-                &self.lines[self.scroll_index + self.size.1 - 3],
-            )?;
+            for i in (1..=scroll_by).rev() {
+                stdout
+                    .queue(cursor::MoveTo(0, (self.size.1 - 1 - i) as u16))?
+                    .queue(Clear(ClearType::CurrentLine))?;
+                self.scroll_index += 1;
+                write!(
+                    stdout,
+                    "{}",
+                    // zero indexed, ignore header and status lines
+                    &self.display_lines[self.scroll_index + self.size.1 - 3].text,
+                )?;
+            }
             stdout.flush()?;
-            self.status("")?;
         }
         Ok(())
     }
@@ -223,7 +310,11 @@ impl Pane {
                 .queue(cursor::MoveTo(0, 1))?
                 .queue(Clear(ClearType::CurrentLine))?;
             self.scroll_index -= 1;
-            write!(&mut stdout, "{}", &self.lines[self.scroll_index])?;
+            write!(
+                &mut stdout,
+                "{}",
+                &self.display_lines[self.scroll_index].text
+            )?;
             stdout.flush()?;
             self.status("")?;
         }
