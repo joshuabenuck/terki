@@ -302,12 +302,24 @@ impl Pane {
 
     pub fn scroll_up(&mut self) -> Result<(), Error> {
         if self.scroll_index > 0 {
+            let mut scroll_by = 1;
+            if let Some(highlight_index) = self.highlight_index {
+                let before = self.line_to_display(highlight_index).unwrap();
+                if let Some(after) = self.line_to_display(highlight_index - 1) {
+                    scroll_by = before - after;
+                    self.reset_line(self.highlight_index);
+                    self.highlight_index = Some(highlight_index - 1);
+                    self.highlight_line()?;
+                    self.display()?;
+                }
+            };
             let mut stdout = stdout();
-            stdout.queue(ScrollDown(1))?;
+            stdout.queue(ScrollDown(scroll_by as u16))?;
             self.queue_header(&mut stdout)?;
             // header line
+            for i in (1..=scroll_by).rev() {
             stdout
-                .queue(cursor::MoveTo(0, 1))?
+                .queue(cursor::MoveTo(0, i as u16))?
                 .queue(Clear(ClearType::CurrentLine))?;
             self.scroll_index -= 1;
             write!(
@@ -315,6 +327,7 @@ impl Pane {
                 "{}",
                 &self.display_lines[self.scroll_index].text
             )?;
+        }
             stdout.flush()?;
             self.status("")?;
         }
