@@ -238,13 +238,13 @@ impl Terki {
         self.display_active_pane()
     }
 
-    fn scroll_down(&mut self) -> Result<(), Error> {
-        self.panes[self.active_pane].scroll_down()?;
+    fn scroll_down(&mut self, scroll_by: usize) -> Result<(), Error> {
+        self.panes[self.active_pane].scroll_down(scroll_by)?;
         Ok(())
     }
 
-    fn scroll_up(&mut self) -> Result<(), Error> {
-        self.panes[self.active_pane].scroll_up()?;
+    fn scroll_up(&mut self, scroll_by: usize) -> Result<(), Error> {
+        self.panes[self.active_pane].scroll_up(scroll_by)?;
         Ok(())
     }
 
@@ -410,10 +410,6 @@ impl Terki {
                         continue;
                     }
                     match event.code {
-                        // keep vim binding separate
-                        // mode handling will complicate these later
-                        KeyCode::Char('k') => self.scroll_up()?,
-                        KeyCode::Char('j') => self.scroll_down()?,
                         KeyCode::Char('h') => self.previous_pane()?,
                         KeyCode::Char('l') => self.next_pane()?,
                         KeyCode::Char('e') => {
@@ -429,8 +425,31 @@ impl Terki {
                                 active_pane.highlight_index = None;
                             }
                         }
-                        KeyCode::Up => self.scroll_up()?,
-                        KeyCode::Down => self.scroll_down()?,
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            let active_pane = &mut self.panes[self.active_pane];
+                            let scroll_by = if let Some(_) = active_pane.highlight_prev()? {
+                                active_pane.display()?;
+                                active_pane.compute_scroll_up(active_pane.highlight_index.unwrap())
+                            } else {
+                                Some(1)
+                            };
+                            if let Some(scroll_by) = scroll_by {
+                                self.scroll_up(scroll_by)?;
+                            }
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            let active_pane = &mut self.panes[self.active_pane];
+                            let scroll_by = if let Some(_) = active_pane.highlight_next()? {
+                                active_pane.display()?;
+                                active_pane
+                                    .compute_scroll_down(active_pane.highlight_index.unwrap())
+                            } else {
+                                Some(1)
+                            };
+                            if let Some(scroll_by) = scroll_by {
+                                self.scroll_down(scroll_by)?;
+                            }
+                        }
                         KeyCode::Left => self.previous_pane()?,
                         KeyCode::Right => self.next_pane()?,
                         KeyCode::Char('o') => {

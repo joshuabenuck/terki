@@ -196,16 +196,79 @@ impl Pane {
                 .attribute(Attribute::Bold)
                 .to_string();
         }
-        self.status(&format!(
-            "start_index: {}; end_index: {}",
-            start_index, end_index
-        ))?;
         Ok(())
     }
 
-    // fn highlight(&mut self, pattern: &str, dir: isize) -> Result<(), Error> {}
+    pub fn compute_scroll_up(&mut self, target_index: usize) -> Option<usize> {
+        let display_line = self.line_to_display(target_index).unwrap();
+        let line_span = self.line_span(target_index).unwrap();
+        let rows = self.size.1;
+        let middle = rows / 2;
+        let mut scroll_by = None;
+        // if highlight item will be above the middle of the screen
+        // consider scrolling more than a single line
+        if display_line - self.scroll_index < middle {
+            // scroll only if the top of the doc is not already displayed
+            if display_line as isize - self.scroll_index as isize >= 0 {
+                // and even then, only scroll by up to half of line_span
+                // and stop if the top of the screen is in view
+                let target_line = middle - (line_span / 2);
+                // parens are needed to avoid underflow!!!
+                scroll_by = Some(target_line - (display_line - self.scroll_index));
+            }
+        }
+        scroll_by
+    }
 
-    // fn highlight_prev(&mut self, pattern: &str) -> Result<(), Error> {}
+    pub fn compute_scroll_down(&mut self, target_index: usize) -> Option<usize> {
+        let display_line = self.line_to_display(target_index).unwrap();
+        let line_span = self.line_span(target_index).unwrap();
+        let rows = self.size.1;
+        let middle = rows / 2;
+        let mut scroll_by = None;
+        // if highlight item will be below the middle of the screen
+        // consider scrolling more than a single line
+        if display_line - self.scroll_index > middle {
+            // scroll only if the bottom of the doc is not already displayed
+            if display_line - self.scroll_index + rows - 2 <= self.lines.len() {
+                // and even then, only scroll by up to half of line_span
+                // and stop if the bottom of the screen is in view
+                let target_line = middle - (line_span / 2);
+                scroll_by = Some(display_line - self.scroll_index - target_line);
+            }
+        }
+        scroll_by
+    }
+
+    pub fn highlight_prev(&mut self) -> Result<Option<usize>, Error> {
+        if let Some(highlight_index) = self.highlight_index {
+            if let Some(display_line) = self.line_to_display(highlight_index - 1) {
+                self.reset_line(self.highlight_index);
+                self.highlight_index = Some(highlight_index - 1);
+                self.highlight_line()?;
+                self.display()?;
+                return Ok(Some(display_line));
+            }
+        }
+        Ok(None)
+    }
+
+    pub fn highlight_next(&mut self) -> Result<Option<usize>, Error> {
+        if let Some(highlight_index) = self.highlight_index {
+            if let Some(display_line) = self.line_to_display(highlight_index + 1) {
+                self.reset_line(self.highlight_index);
+                self.highlight_index = Some(highlight_index + 1);
+                self.highlight_line()?;
+                self.display()?;
+                return Ok(Some(display_line));
+            }
+        }
+        Ok(None)
+    }
+
+    // fn search(&mut self, pattern: &str, dir: isize) -> Result<(), Error> {}
+
+    // fn search_prev(&mut self, pattern: &str) -> Result<(), Error> {}
 
     pub fn search_next(&mut self, pattern: &str) -> Result<(), Error> {
         // reset if new pattern isn't the same as the old one
@@ -243,13 +306,6 @@ impl Pane {
                 }
             }
         };
-        // match &self.current_highlight {
-        //     None => self.status("none")?,
-        //     Some(highlight) => self.status(&format!(
-        //         "line: {}; index: {}",
-        //         highlight.line, highlight.index
-        //     ))?,
-        // };
         Ok(())
     }
 
@@ -266,68 +322,65 @@ impl Pane {
         return None;
     }
 
-    pub fn scroll_down(&mut self) -> Result<(), Error> {
-        if self.scroll_index + self.size.1 - 2 < self.lines.len() {
-            let mut scroll_by = 1;
-            if let Some(highlight_index) = self.highlight_index {
-                let before = self.line_to_display(highlight_index).unwrap();
-                if let Some(after) = self.line_to_display(highlight_index + 1) {
-                    scroll_by = after - before;
-                    self.reset_line(self.highlight_index);
-                    self.highlight_index = Some(highlight_index + 1);
-                    self.highlight_line()?;
-                    self.display()?;
+    pub fn line_span(&self, target_index: usize) -> Option<usize> {
+        let mut line_span: usize = 0;
+        let line = self.line_to_display(target_index);
+        if let Some(line) = line {
+            let target_index = self.lines[line].line_index.unwrap();
+            for i in line..self.lines.len() {
+                let current_line = &self.lines[i];
+                if let Some(index) = current_line.line_index {
+                    if index == target_index {
+                        line_span += 1;
+                        continue;
+                    }
                 }
-            };
+                break;
+            }
+        }
+        Some(line_span)
+    }
+
+    pub fn scroll_down(&mut self, scroll_by: usize) -> Result<(), Error> {
+        if self.scroll_index + self.size.1 - 2 < self.lines.len() {
             let mut stdout = stdout();
             stdout.queue(ScrollUp(scroll_by as u16))?;
             self.queue_header(&mut stdout)?;
             // zero indexed, account for header
             for i in (1..=scroll_by).rev() {
+                // zero indexed, ignore header and status lines
+                let next_line = self.scroll_index + self.size.1 - 2;
+                if next_line >= self.lines.len() {
+                    break;
+                }
                 stdout
                     .queue(cursor::MoveTo(0, (self.size.1 - 1 - i) as u16))?
                     .queue(Clear(ClearType::CurrentLine))?;
                 self.scroll_index += 1;
-                write!(
-                    stdout,
-                    "{}",
-                    // zero indexed, ignore header and status lines
-                    &self.display_lines[self.scroll_index + self.size.1 - 3].text,
-                )?;
+                write!(stdout, "{}", &self.display_lines[next_line].text,)?;
             }
             stdout.flush()?;
         }
         Ok(())
     }
 
-    pub fn scroll_up(&mut self) -> Result<(), Error> {
+    pub fn scroll_up(&mut self, scroll_by: usize) -> Result<(), Error> {
         if self.scroll_index > 0 {
-            let mut scroll_by = 1;
-            if let Some(highlight_index) = self.highlight_index {
-                let before = self.line_to_display(highlight_index).unwrap();
-                if let Some(after) = self.line_to_display(highlight_index - 1) {
-                    scroll_by = before - after;
-                    self.reset_line(self.highlight_index);
-                    self.highlight_index = Some(highlight_index - 1);
-                    self.highlight_line()?;
-                    self.display()?;
-                }
-            };
             let mut stdout = stdout();
             stdout.queue(ScrollDown(scroll_by as u16))?;
             self.queue_header(&mut stdout)?;
             // header line
             for i in (1..=scroll_by).rev() {
-            stdout
-                .queue(cursor::MoveTo(0, i as u16))?
-                .queue(Clear(ClearType::CurrentLine))?;
-            self.scroll_index -= 1;
-            write!(
-                &mut stdout,
-                "{}",
-                &self.display_lines[self.scroll_index].text
-            )?;
-        }
+                stdout
+                    .queue(cursor::MoveTo(0, i as u16))?
+                    .queue(Clear(ClearType::CurrentLine))?;
+                self.scroll_index -= 1;
+                write!(
+                    &mut stdout,
+                    "{}",
+                    &self.display_lines[self.scroll_index].text
+                )?;
+            }
             stdout.flush()?;
             self.status("")?;
         }
